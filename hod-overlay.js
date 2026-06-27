@@ -99,6 +99,8 @@ function loadOverlayFile(file) {
 }
 
 function disposeOverlay() {
+    // Invalidate any in-flight load so a slow onload/loadeddata can't re-enable a removed overlay
+    _overlayLoadGen++;
     if (overlayVideo) {
         overlayVideo.pause();
         overlayVideo.removeAttribute('src');
@@ -287,6 +289,7 @@ function buildOverlayPanel() {
     // Remove button
     document.getElementById('overlay-remove-btn').addEventListener('click', (e) => {
         e.stopPropagation();
+        e.preventDefault(); // button sits inside the upload <label> — stop it from opening the file picker
         disposeOverlay();
         fileInput.value = '';
     });

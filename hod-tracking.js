@@ -571,6 +571,9 @@ function trackPoints() {
     if (currentMode === 19) {
         videoEl.loadPixels();
         if (videoEl.pixels.length === 0 || !_bgRefFrame) return;
+        // Reference frame stale after a source/resolution change → mismatched length yields
+        // NaN distances and silent failure. Drop it so a fresh capture is required.
+        if (_bgRefFrame.length !== videoEl.pixels.length) { _bgRefFrame = null; return; }
         const w = videoEl.width, h = videoEl.height;
         let gridSize = adaptiveGridSize(w);
         let threshold = map(paramValues[1], 0, 100, 80, 10); // spectrum controls threshold

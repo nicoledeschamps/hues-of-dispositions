@@ -18,6 +18,11 @@ function handleAudioFile(event) {
     if (!file) return;
     initAudioContext();
 
+    // Switching to a file source — tear down any live mic/video-audio first so their
+    // streams and source-state flags don't stay active and desynced from the UI.
+    if (typeof micActive !== 'undefined' && micActive && typeof stopMicrophone === 'function') stopMicrophone();
+    if (typeof videoAudioActive !== 'undefined' && videoAudioActive && typeof stopVideoAudio === 'function') stopVideoAudio();
+
     // Clean up previous
     if (audioElement) { audioElement.pause(); audioElement.remove(); }
     if (audioSource) { try { audioSource.disconnect(); } catch(e){} }
@@ -219,7 +224,7 @@ function updateSyncBars() {
     _syncBarsFrame++;
     if (_syncBarsFrame % 3 !== 0) return;
 
-    var isLive = audioLoaded && (audioPlaying || micActive || videoAudioActive) && audioSyncEnabled;
+    var isLive = audioLoaded && (audioPlaying || micActive || videoAudioActive) && audioSync;
     if (_syncBarsEl) _syncBarsEl.classList.toggle('is-live', isLive);
     if (!isLive || !frequencyData) return;
 
@@ -880,6 +885,25 @@ function toggleMicrophone() {
     }
 }
 
+// Reconnect the file-based audio graph saved before switching to mic/video input.
+// Used to recover when acquiring the new source fails partway through.
+function _restoreSavedFileAudioGraph() {
+    if (!window._savedFileAudioSource || !window._savedFileAudioAnalyser) return false;
+    audioSource = window._savedFileAudioSource;
+    audioAnalyser = window._savedFileAudioAnalyser;
+    audioGainNode = window._savedFileAudioGainNode;
+    try {
+        audioSource.connect(audioAnalyser);
+        audioAnalyser.connect(audioGainNode);
+        audioGainNode.connect(audioContext.destination);
+    } catch(e) {}
+    frequencyData = new Uint8Array(audioAnalyser.frequencyBinCount);
+    floatFreqData = new Float32Array(audioAnalyser.frequencyBinCount);
+    prevFloatFreqData = new Float32Array(audioAnalyser.frequencyBinCount);
+    audioLoaded = window._savedFileAudioLoaded;
+    return true;
+}
+
 function startMicrophone() {
     // Stop video audio if active (mutually exclusive)
     if (videoAudioActive) stopVideoAudio();
@@ -922,6 +946,12 @@ function startMicrophone() {
         updateButtonStates();
     }).catch(err => {
         console.warn('Microphone access denied:', err);
+        // We already disconnected the file graph above — restore it so playback/reactivity survive
+        micActive = false;
+        _restoreSavedFileAudioGraph();
+        const micBtn = document.getElementById('audio-src-mic');
+        if (micBtn) micBtn.classList.remove('active');
+        updateButtonStates();
     });
 }
 
@@ -1003,6 +1033,12 @@ async function startVideoAudio() {
             _videoAudioSource = audioContext.createMediaElementSource(videoEl.elt);
         } catch(e) {
             console.warn('[Audio] Could not create source from video element:', e);
+            // We already disconnected the file graph above — restore it before bailing out
+            videoAudioActive = false;
+            _restoreSavedFileAudioGraph();
+            const vidBtn = document.getElementById('audio-src-video');
+            if (vidBtn) vidBtn.classList.remove('active');
+            updateButtonStates();
             return;
         }
     }

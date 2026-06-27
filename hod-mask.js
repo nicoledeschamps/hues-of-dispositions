@@ -44,6 +44,9 @@ function runMaskSegmentation(clickX, clickY, modifierType) {
 
     let normX = Math.max(0, Math.min(1, (clickX - videoX) / videoW));
     let normY = Math.max(0, Math.min(1, (clickY - videoY) / videoH));
+    // Front-facing webcam is displayed mirrored — flip X back into source space
+    // (matches screenToVideoCoords) so clicks select the spot the user actually sees.
+    if (usingWebcam && _currentFacingMode === 'user') normX = 1 - normX;
 
     if (modifierType === 'add' && maskReady) {
         maskPoints.push({ x: normX, y: normY, type: 'add' });

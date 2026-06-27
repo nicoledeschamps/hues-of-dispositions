@@ -2279,8 +2279,8 @@ function registerCoreShaderEffects() {
             let sz = Math.max(1, Math.round((grainSize-5)/(40-5)*7+1));
             shaderFX.setUniform('grain','u_size',sz);
             shaderFX.setUniform('grain','u_mono',grainColorMode==='mono'?1:0);
-            // Animate grain only when audio sync is active for this effect
-            const hasAudio = typeof fxAudioSync !== 'undefined' && fxAudioSync && fxAudioSync.has && fxAudioSync.has('grain');
+            // Animate grain only when audio sync is active (fxAudioSync is a plain object map, not a Map)
+            const hasAudio = typeof fxAudioSync !== 'undefined' && fxAudioSync && fxAudioSync['grain'] && fxAudioSync['grain'].enabled;
             shaderFX.setUniform('grain','u_animate', hasAudio ? 1 : 0);
         }},
         { name:'glitch', frag:FRAG_GLITCH, sync:()=>{

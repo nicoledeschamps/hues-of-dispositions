@@ -609,8 +609,8 @@ function _executeGestureAction(action, hand) {
             // Briefly activate a random intense effect for 400ms
             if (typeof FX_UI_CONFIG !== 'undefined' && typeof activeEffects !== 'undefined') {
                 var intenseFx = ['glitch', 'pixelate', 'datamosh_melt', 'kaleid', 'thermal', 'invert', 'edge'];
+                // Only flash effects that aren't already on — never pick (and later delete) a user-enabled effect
                 var available = intenseFx.filter(function(n) { return FX_UI_CONFIG[n] && !activeEffects.has(n); });
-                if (available.length === 0) available = intenseFx.filter(function(n) { return FX_UI_CONFIG[n]; });
                 if (available.length > 0) {
                     var pick = available[Math.floor(Math.random() * available.length)];
                     // Remove previous flash if still active
@@ -3377,7 +3377,20 @@ function getHandControlValue(source, handData) {
 let _handSyncUIFrame = 0;
 
 function applyPerEffectHandsSync() {
-    if (!handsEnabled || _handResults.length === 0) return;
+    if (!handsEnabled || _handResults.length === 0) {
+        // Hands gone / tracking off — restore any modulated params to their baseline
+        // so effects don't stay frozen at the last hand-driven value.
+        for (var rk in fxHandsSync) {
+            var rc = fxHandsSync[rk];
+            if (rc && rc._baseValue != null) {
+                var rpm = FX_PARAM_MAP[rk];
+                if (rpm && rpm[rc.paramIndex]) rpm[rc.paramIndex].s(rc._baseValue);
+                rc._baseValue = null;
+                rc.smoothedValue = 0;
+            }
+        }
+        return;
+    }
     var keys = Object.keys(fxHandsSync);
     if (keys.length === 0) return;
 
@@ -3468,8 +3481,12 @@ function applyPerEffectHandsSync() {
     if (doUI) {
         for (var j = 0; j < keys.length; j++) {
             var c = fxHandsSync[keys[j]];
+            var pct = Math.round((c.smoothedValue || 0) * 100) + '%';
             var meter = document.getElementById('hand-sync-meter-' + keys[j]);
-            if (meter) meter.style.width = Math.round((c.smoothedValue || 0) * 100) + '%';
+            if (meter) meter.style.width = pct;
+            // Per-effect card meter uses a different id prefix — update it too
+            var cardMeter = document.getElementById('fx-hand-meter-' + keys[j]);
+            if (cardMeter) cardMeter.style.width = pct;
         }
     }
 }

@@ -749,8 +749,8 @@ function applyGrain() {
     let sy = Math.floor(videoY * d);
     let ey = Math.floor((videoY + videoH) * d);
     let amp = intensity * 80;
-    // Animate grain only when audio sync is active
-    const hasAudio = typeof fxAudioSync !== 'undefined' && fxAudioSync && fxAudioSync.has && fxAudioSync.has('grain');
+    // Animate grain only when audio sync is active (fxAudioSync is a plain object map, not a Map)
+    const hasAudio = typeof fxAudioSync !== 'undefined' && fxAudioSync && fxAudioSync['grain'] && fxAudioSync['grain'].enabled;
     const seed = hasAudio ? Math.floor(millis() * 0.024) : 0;
     for (let y = sy; y < ey; y += sz) {
         for (let x = sx; x < ex; x += sz) {
@@ -2821,7 +2821,9 @@ function removeCurrentFxEffect() {
 
 function updateFxOnButton() {
     let btn = document.getElementById('fx-on-btn');
-    if (!btn || !currentViewedEffect) return;
+    if (!btn) return;
+    // No effect viewed (deselected) — clear the active state instead of leaving it stuck on
+    if (!currentViewedEffect) { btn.classList.remove('active'); return; }
     let isActive = activeEffects.has(currentViewedEffect);
     btn.classList.toggle('active', isActive);
     let catColor = FX_CAT_COLORS[FX_CATEGORIES[currentViewedEffect]] || '#6C5CE7';
@@ -2894,6 +2896,8 @@ function applyPreset(presetKey, isCustom) {
     // 1. Clear all active effects and reset them
     [...activeEffects].forEach(name => resetEffect(name));
     activeEffects.clear();
+    // Also clear hidden-effect state so a preset can't re-add an effect that stays invisible
+    if (typeof hiddenEffects !== 'undefined' && hiddenEffects) hiddenEffects.clear();
 
     // 2. Apply each effect in the preset
     for (let [effectName, params] of Object.entries(preset.effects)) {

@@ -3287,7 +3287,7 @@ function setupCoreUIListeners() {
         return {
             video: !!videoLoaded,
             effects: !!(activeEffects && activeEffects.size > 0),
-            audio: !!(typeof audioSyncEnabled !== 'undefined' && audioSyncEnabled),
+            audio: !!(typeof audioSync !== 'undefined' && audioSync),
             tracking: currentMode > 0,
             timeline: !!(typeof timelineSegments !== 'undefined' && timelineSegments && timelineSegments.length > 0)
         };
@@ -3779,7 +3779,7 @@ function setupCoreUIListeners() {
             rightText = fxCount > 0 ? fxCount + ' active' : 'Choose a look';
             rightLive = fxCount > 0;
         } else if (section === 'audio') {
-            var synced = typeof audioSyncEnabled !== 'undefined' && audioSyncEnabled;
+            var synced = typeof audioSync !== 'undefined' && audioSync;
             leftText = synced ? 'Sync armed' : 'Waiting';
             leftLive = synced;
             rightText = synced ? 'Live' : 'Off';
@@ -3901,7 +3901,7 @@ function setupCoreUIListeners() {
         }
 
         // Audio meter
-        var audioActive = typeof audioSyncEnabled !== 'undefined' && audioSyncEnabled;
+        var audioActive = typeof audioSync !== 'undefined' && audioSync;
         var meterVal = audioActive ? 42 : 18;
         if (_meterFill) _meterFill.style.setProperty('--meter-fill', meterVal + '%');
         if (_meterStatus) _meterStatus.textContent = audioActive ? 'live' : 'idle';
@@ -3940,7 +3940,7 @@ function setupCoreUIListeners() {
         if (typeof toggleRecording === 'function') toggleRecording();
     });
     if (exportScreenBtn) exportScreenBtn.addEventListener('click', () => {
-        if (typeof takeScreenshot === 'function') takeScreenshot();
+        if (typeof saveScreenshot === 'function') saveScreenshot();
     });
     if (exportSaveBtn) exportSaveBtn.addEventListener('click', () => {
         if (typeof saveRecording === 'function') saveRecording();
@@ -5255,8 +5255,10 @@ function startWebcam(deviceId, facingMode) {
     ui.fileName.innerText = 'webcam active';
     currentMode = 1; _userMode = 1;
 
-    // Build constraints: deviceId > facingMode > default
-    const savedDevice = deviceId || localStorage.getItem('hod-camera-device') || undefined;
+    // Build constraints: deviceId > facingMode > default.
+    // When an explicit facingMode is requested (camera flip), honor it over the
+    // saved device — otherwise a saved deviceId pins the camera and flipping is a no-op.
+    const savedDevice = facingMode ? deviceId : (deviceId || localStorage.getItem('hod-camera-device') || undefined);
     let constraints;
     if (savedDevice) {
         // Use 'ideal' instead of 'exact' — 'exact' fails hard if device is temporarily unavailable
@@ -5657,6 +5659,13 @@ function stopRecording() {
         recordingAudioDest = null;
     }
     isRecording = false;
+    // Guard: a source must be loaded, otherwise videoW/H are undefined and the
+    // recording canvas gets a zero/NaN size — producing an invalid capture.
+    if (!videoLoaded || !videoEl || !isFinite(videoW) || videoW <= 0 || !isFinite(videoH) || videoH <= 0) {
+        let tbRec = document.getElementById('tb-record');
+        if (tbRec) { tbRec.style.borderColor = '#ff4444'; setTimeout(() => { tbRec.style.borderColor = ''; }, 600); }
+        return;
+    }
     recordingStartTime = 0;
     recordingCanvas = null;
     recordingCtx = null;
@@ -5730,7 +5739,9 @@ function keyPressed(event) {
     if (key === '?') { toggleHelp(); return false; }
     if (keyCode === ESCAPE && _helpVisible) { toggleHelp(); return false; }
     if (keyCode === ESCAPE && _settingsVisible) { toggleSettings(); return false; }
-    if (keyCode === ESCAPE && window._closeAllDrawers) { window._closeAllDrawers(); return false; }
+    // Only consume Escape for drawers when one is actually open — otherwise it would
+    // swallow the color-pick-undo and Mask-exit handlers below (closeAllDrawers is always defined).
+    if (keyCode === ESCAPE && window._closeAllDrawers && document.querySelector('.drawer-open')) { window._closeAllDrawers(); return false; }
     // Undo accidental click-to-track color pick
     if (keyCode === ESCAPE && currentMode === 5 && window._prevModeBeforeColorPick != null) {
         currentMode = window._prevModeBeforeColorPick;
@@ -5744,6 +5755,8 @@ function keyPressed(event) {
 
     // Block all other keys while help or settings is open
     if (_helpVisible || _settingsVisible) return false;
+    // Stop the canvas capture track so it doesn't stay alive across recordings
+    if (recordingVideoTrack) { try { recordingVideoTrack.stop(); } catch(e) {} }
 
     let changed = false;
 
@@ -5769,6 +5782,8 @@ function keyPressed(event) {
     if (key === 'r' || key === 'R') { restartVideo(); return false; }
 
     if (key === 'w' || key === 'W') {
+    // No source drawn yet → videoX/Y/W/H are undefined and getImageData would throw
+    if (!videoLoaded || !isFinite(videoW) || videoW <= 0 || !isFinite(videoH) || videoH <= 0) return;
         navIndex = (navIndex - 1 + navOrder.length) % navOrder.length;
         currentParam = navOrder[navIndex];
         return false;

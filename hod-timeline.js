@@ -85,11 +85,16 @@ window.addEventListener('keydown', (e) => {
             for (let clip of clipboardSegments) {
                 let offset = clip.startTime - earliest;
                 let dur = clip.endTime - clip.startTime;
+                let newStart = currentTime + offset;
+                let newEnd = Math.min(newStart + dur, tlDur);
+                // Skip segments that would land past the end — clamping endTime alone
+                // could leave startTime > endTime (invalid segment).
+                if (newStart >= tlDur || newEnd <= newStart) continue;
                 newSegs.push({
                     ...clip,
                     id: nextSegId++,
-                    startTime: currentTime + offset,
-                    endTime: Math.min(currentTime + offset + dur, tlDur),
+                    startTime: newStart,
+                    endTime: newEnd,
                     params: JSON.parse(JSON.stringify(clip.params)),
                     lane: 0,
                     synced: undefined
@@ -695,8 +700,15 @@ function renderAudioSyncSublanes() {
     // Remove stale lanes
     existing.forEach(el => {
         if (!enabled.includes(el.dataset.effect)) {
+            let eff = el.dataset.effect;
+            // Detach the document-level drag listeners before dropping the cache entry, else they leak
+            let c = _sublaneCache[eff];
+            if (c && c._docMoveHandler) {
+                document.removeEventListener('mousemove', c._docMoveHandler);
+                document.removeEventListener('mouseup', c._docUpHandler);
+            }
             el.remove();
-            delete _sublaneCache[el.dataset.effect];
+            delete _sublaneCache[eff];
         }
     });
 
@@ -898,7 +910,10 @@ function _updateSublanePlayhead(effectName, vr) {
     if (!cache || !cache.playhead) return;
 
     let now = 0;
-    if (typeof audioElement !== 'undefined' && audioElement && audioElement.currentTime) now = audioElement.currentTime;
+    // Test for audio availability, not currentTime truthiness — currentTime === 0 (start of audio)
+    // is valid and must not fall through to video time.
+    let audioReady = typeof audioElement !== 'undefined' && audioElement && (typeof audioLoaded === 'undefined' || audioLoaded);
+    if (audioReady) now = audioElement.currentTime;
     else if (typeof videoEl !== 'undefined' && videoEl) now = videoEl.time();
 
     let pct = (now - vr.start) / (vr.end - vr.start);

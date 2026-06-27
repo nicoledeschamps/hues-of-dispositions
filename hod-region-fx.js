@@ -471,7 +471,8 @@ function applyRegionFXToRect(x, y, w, h, mode, intensity, canvasEl, inverted, fu
     let rh = y2 - y1;
     if (rw < 2 || rh < 2) return;
 
-    _applyRegionFXCore(x1, y1, rw, rh, mode, intensity, canvasEl, inverted || false, fusion || 'normal');
+    // fusion is a boolean flag — `|| 'normal'` made it always truthy, forcing alpha to 0.5
+    _applyRegionFXCore(x1, y1, rw, rh, mode, intensity, canvasEl, inverted || false, !!fusion);
 }
 
 // Shared core — takes already-clamped rect. Handles texture upload, render pass, composite.
