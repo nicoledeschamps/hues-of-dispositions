@@ -1662,6 +1662,41 @@
         #debug-panel .val { color: #0f0; }
         #debug-panel .warn { color: #f80; }
         #debug-panel .off { color: #f44; }
+        #audit-panel {
+            position: absolute;
+            top: 76px;
+            right: 16px;
+            z-index: 22;
+            display: none;
+            min-width: 188px;
+            padding: 8px 10px;
+            border: 1px solid rgba(139,69,232,0.45);
+            border-radius: 6px;
+            background: rgba(12,9,16,0.82);
+            color: var(--text-main);
+            font-family: var(--font-mono, 'Courier New', monospace);
+            font-size: 10px;
+            line-height: 1.45;
+            pointer-events: none;
+            box-shadow: 0 12px 30px rgba(0,0,0,0.28);
+            backdrop-filter: blur(10px);
+        }
+        #audit-panel.visible { display: block; }
+        #audit-panel .audit-title {
+            color: var(--color-accent);
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            margin-bottom: 4px;
+        }
+        #audit-panel .audit-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 14px;
+        }
+        #audit-panel .audit-label { color: var(--text-muted); }
+        #audit-panel .audit-val { color: var(--text-main); font-weight: 700; }
+        #audit-panel .audit-note { color: var(--color-yellow); margin-top: 4px; }
         /* ═══ TRACKING STATUS ROW ═══ */
         .tracking-status-row {
             display: flex;
@@ -2498,6 +2533,71 @@
             width: 100%;
             min-width: 0;
             text-align: center;
+        }
+        .detect-tool {
+            padding: 8px;
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 6px;
+            background: rgba(255,255,255,0.025);
+        }
+        .detect-tool-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+        .detect-tool-title {
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--text-main);
+            text-transform: uppercase;
+            letter-spacing: 0.45px;
+        }
+        .detect-tool-state {
+            font-size: 9px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.35px;
+        }
+        .preset-chip-row {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 2px;
+            margin-top: 6px;
+        }
+        .preset-chip-row .selector-btn {
+            min-width: 0;
+            padding-left: 4px;
+            padding-right: 4px;
+        }
+        .color-picker-row {
+            display: grid;
+            grid-template-columns: 38px 1fr;
+            align-items: center;
+            gap: 8px;
+            margin-top: 8px;
+        }
+        .color-picker-row input[type="color"] {
+            width: 38px;
+            height: 30px;
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 6px;
+            background: transparent;
+            cursor: pointer;
+        }
+        .face-target-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 2px;
+            margin-top: 6px;
+        }
+        .mode-demoted-note {
+            display: block;
+            margin-top: 6px;
+            color: var(--text-muted);
+            font-size: var(--font-xs);
+            line-height: 1.35;
         }
         /* Tab content panels */
         .tracking-tab-content {
@@ -5423,6 +5523,7 @@
     <div class="panel-overlay" id="panel-overlay"></div>
 
     <div id="debug-panel"></div>
+    <div id="audit-panel"></div>
 
     <!-- Canvas empty state — shown when no source loaded -->
     <div id="canvas-empty-state">
@@ -5733,29 +5834,27 @@
                 <div class="tracking-tab-bar" role="tablist" aria-label="Detection family">
                     <button class="tracking-tab active" data-track-tab="color" role="tab" aria-selected="true">Color</button>
                     <button class="tracking-tab" data-track-tab="analysis" role="tab" aria-selected="false">Analysis</button>
-                    <button class="tracking-tab" data-track-tab="ai" role="tab" aria-selected="false">AI</button>
+                    <button class="tracking-tab" data-track-tab="ai" role="tab" aria-selected="false">Face</button>
                 </div>
                 <!-- Color tab content -->
                 <div class="tracking-tab-content active" data-track-tab="color" id="mode-color-panel" role="tabpanel">
-                    <span class="tab-desc">Choose which color range to track in the video</span>
-                    <div class="tracking-grid" role="group" aria-label="Color tracking modes">
-                        <button class="selector-btn active" data-value="1">BLUE</button>
-                        <button class="selector-btn" data-value="2">RED</button>
-                        <button class="selector-btn" data-value="5">CUSTOM</button>
-                        <button class="selector-btn" data-value="13">INVERT</button>
-                        <button class="selector-btn" data-value="10">WARM</button>
-                        <button class="selector-btn" data-value="11">COOL</button>
-                    </div>
-                    <div class="hint-text" style="display:flex;flex-wrap:wrap;gap:2px 10px;margin-top:4px">
-                        <span>BLUE/RED: Preset hue targets</span>
-                        <span>CUSTOM: Pick any hue from video</span>
-                        <span>INVERT: Track everything except selected hue</span>
-                        <span>WARM/COOL: Bias toward warm or cool tones</span>
-                    </div>
-                    <!-- Mode-specific: Custom color picker -->
-                    <div class="control-group mode-context" id="custom-color-group" style="display:none">
-                        <label for="custom-color-picker">Target Color</label>
-                        <input type="color" id="custom-color-picker" value="#00b7eb" style="width:100%;height:28px;border:none;background:transparent;cursor:pointer;">
+                    <span class="tab-desc">Pick any color in the video, then tune the tolerance</span>
+                    <div class="detect-tool mode-context" id="custom-color-group">
+                        <div class="detect-tool-head">
+                            <span class="detect-tool-title">Target Color</span>
+                            <span class="detect-tool-state" id="color-detect-state">Pick from video</span>
+                        </div>
+                        <div class="color-picker-row">
+                            <input type="color" id="custom-color-picker" value="#00b7eb" aria-label="Target color">
+                            <span class="hint-text">Click/tap the video to sample any hue, or choose one manually.</span>
+                        </div>
+                        <div class="preset-chip-row" role="group" aria-label="Color detect presets">
+                            <button class="selector-btn" data-color-preset="red">RED</button>
+                            <button class="selector-btn" data-color-preset="blue">BLUE</button>
+                            <button class="selector-btn" data-color-preset="warm">WARM</button>
+                            <button class="selector-btn" data-color-preset="cool">COOL</button>
+                            <button class="selector-btn" data-color-preset="invert">INVERT</button>
+                        </div>
                     </div>
                 </div>
                 <!-- Analysis tab content -->
@@ -5765,21 +5864,14 @@
                         <button class="selector-btn" data-value="3">MOTION</button>
                         <button class="selector-btn" data-value="6">BRIGHT</button>
                         <button class="selector-btn" data-value="7">DARK</button>
-                        <button class="selector-btn" data-value="8">EDGE</button>
-                        <button class="selector-btn" data-value="9">CHROMA</button>
                         <button class="selector-btn" data-value="12">FLICKER</button>
-                        <button class="selector-btn" data-value="4">SKIN</button>
-                        <button class="selector-btn" data-value="19">BG SUB</button>
                     </div>
                     <div class="hint-text" style="display:flex;flex-wrap:wrap;gap:2px 10px;margin-top:4px">
                         <span>MOTION: Frame-to-frame pixel movement</span>
                         <span>BRIGHT/DARK: Brightest or darkest regions</span>
-                        <span>EDGE: Contour edges in the frame</span>
-                        <span>CHROMA: Isolate by color saturation</span>
-                        <span>FLICKER: Rapid brightness changes</span>
-                        <span>SKIN: Skin-tone color ranges</span>
-                        <span>BG SUB: Detect changes from captured background</span>
+                        <span>FLICKER: Rapid changes; strong with audio sync</span>
                     </div>
+                    <span class="mode-demoted-note">Skin, Edge, Chroma, and BG Sub are hidden from the main flow until they prove reliable and useful.</span>
                     <div id="bg-sub-controls" style="display:none;margin-top:6px">
                         <button class="selector-btn" id="btn-capture-bg" style="width:100%;background:rgba(139,69,232,0.2)">CAPTURE BG</button>
                         <span class="hint-text" id="bg-sub-status">No background captured — click CAPTURE BG with a clean frame</span>
@@ -5787,17 +5879,8 @@
                 </div>
                 <!-- AI tab content -->
                 <div class="tracking-tab-content" data-track-tab="ai" id="mode-ai-panel" role="tabpanel">
-                    <span class="tab-desc">Machine-learning powered feature detection</span>
-                    <div class="tracking-grid" style="grid-template-columns: repeat(2, 1fr)" role="group" aria-label="AI tracking modes">
-                        <button class="selector-btn" data-value="14">MASK</button>
-                        <button class="selector-btn" data-value="15">EYES</button>
-                        <button class="selector-btn" data-value="16">LIPS</button>
-                        <button class="selector-btn" data-value="17">FACE</button>
-                    </div>
-                    <div class="hint-text" style="display:flex;flex-wrap:wrap;gap:2px 10px;margin-top:4px">
-                        <span>MASK: AI foreground/background segmentation</span>
-                        <span>EYES/LIPS/FACE: AI facial landmark detection</span>
-                    </div>
+                    <span class="tab-desc">Face landmark detection for expressive subject-driven blobs</span>
+                    <span class="mode-demoted-note">Magic Mask is hidden for this stabilization pass; Face Track keeps the lighter, more expressive face elements.</span>
                     <!-- Mode-specific: Mask controls -->
                     <div class="control-group mode-context" id="mask-controls-group" style="display:none">
                         <label>Magic Mask <span id="mask-status" style="color:#FDCB6E">CLICK SUBJECT</span></label>
@@ -5813,12 +5896,17 @@
                     </div>
                     <!-- Mode-specific: Face controls -->
                     <div class="control-group mode-context" id="face-controls-group" style="display:none">
-                        <label>Face Tracking <span id="face-status" style="color:#00CEC9">DETECTING</span></label>
+                        <label>Face Track <span id="face-status" style="color:#00CEC9">DETECTING</span></label>
                         <div id="face-loading" style="display:none;font-size:var(--font-xs);color:var(--text-muted);margin-bottom:6px">
                             Loading face model...
                         </div>
                         <div id="face-hint" style="font-size:var(--font-xs);color:var(--text-muted);margin-bottom:6px">
                             Point camera or video at a face. Blobs track facial landmarks.
+                        </div>
+                        <div class="face-target-row" role="group" aria-label="Face tracking target">
+                            <button class="selector-btn" data-face-mode="17">FACE</button>
+                            <button class="selector-btn" data-face-mode="15">EYES</button>
+                            <button class="selector-btn" data-face-mode="16">LIPS</button>
                         </div>
                     </div>
 
@@ -5832,9 +5920,9 @@
             <div class="slider-card">
                 <div class="slider-card-label">Detection Tuning</div>
                 <div class="control-group" id="group-0">
-                    <label>Quantity <input type="number" class="value-input" id="val-0" value="15"></label>
+                    <label>Quantity <input type="number" class="value-input" id="val-0" value="10"></label>
                     <div class="slider-wrapper">
-                        <input type="range" id="slider-0" min="0" max="100" value="15" step="1">
+                        <input type="range" id="slider-0" min="0" max="100" value="10" step="1">
                     </div>
                     <span class="hint-text">Maximum number of blobs to track simultaneously</span>
                 </div>
@@ -5862,10 +5950,10 @@
                     <span class="hint-text">Allowed size variation between frames — higher = more lenient</span>
                 </div>
                 <div class="control-group" id="group-5">
-                    <label>Rate (ms) <input type="number" class="value-input" id="val-5" value="4"></label>
+                    <label>Rate (ms) <input type="number" class="value-input" id="val-5" value="8"></label>
                     <span id="desc-rate" class="visually-hidden">Spawn interval in milliseconds — lower values create blobs faster</span>
                     <div class="slider-wrapper">
-                        <input type="range" id="slider-5" min="0" max="100" value="4" step="1" aria-describedby="desc-rate">
+                        <input type="range" id="slider-5" min="0" max="100" value="8" step="1" aria-describedby="desc-rate">
                     </div>
                     <span class="hint-text">Detection refresh interval in ms — lower = faster but heavier on CPU</span>
                 </div>
@@ -7159,20 +7247,16 @@
                 <h3>Tracking Modes</h3>
                 <dl>
                     <dt>0</dt><dd>OFF</dd>
-                    <dt>1 / Z</dt><dd>BLUE</dd>
-                    <dt>2 / X</dt><dd>RED</dd>
+                    <dt>1 / Z</dt><dd>Color Detect: blue</dd>
+                    <dt>2 / X</dt><dd>Color Detect: red</dd>
                     <dt>3</dt><dd>MOTION</dd>
-                    <dt>4</dt><dd>SKIN</dd>
-                    <dt>5</dt><dd>CUSTOM</dd>
-                    <dt>6</dt><dd>BRIGHT</dd>
-                    <dt>7</dt><dd>DARK</dd>
-                    <dt>8</dt><dd>EDGE</dd>
-                    <dt>9</dt><dd>CHROMA</dd>
-                    <dt>M</dt><dd>AI MASK</dd>
-                    <dt>Esc</dt><dd>Exit Mask</dd>
-                    <dt>EYES</dt><dd>Eye tracking (click btn)</dd>
-                    <dt>LIPS</dt><dd>Lip tracking (click btn)</dd>
-                    <dt>FACE</dt><dd>Full face mesh (click btn)</dd>
+                    <dt>4</dt><dd>BRIGHT</dd>
+                    <dt>5</dt><dd>DARK</dd>
+                    <dt>6</dt><dd>FLICKER</dd>
+                    <dt>7</dt><dd>FACE</dd>
+                    <dt>8</dt><dd>EYES</dd>
+                    <dt>9</dt><dd>LIPS</dd>
+                    <dt>Shift+G</dt><dd>Audit overlay</dd>
                 </dl>
             </div>
             <div class="help-section">
@@ -7243,7 +7327,7 @@
                 <div class="help-workflow-grid">
                     <div class="help-tip"><strong>Effects</strong> — 68 effects across Color, Distortion, Pattern, and Overlay categories. Click to apply, eye to toggle, trash to remove.</div>
                     <div class="help-tip"><strong>Audio Sync</strong> — The heart of H.O.D. Connect sound to almost everything. Global sync targets + per-effect parameter mapping. Look for the &#x266B; badge.</div>
-                    <div class="help-tip"><strong>Tracking</strong> — Color, Analysis, and AI detection families. 19 modes including AI Mask, Face, Eyes, Lips, and Background Subtraction.</div>
+                    <div class="help-tip"><strong>Tracking</strong> — Color Detect, Motion/Bright/Dark/Flicker analysis, and Face Track targets for Face, Eyes, and Lips.</div>
                     <div class="help-tip"><strong>Region FX</strong> — Apply GPU effects (blur, thermal, glitch, etc.) directly to tracked blobs.</div>
                     <div class="help-tip"><strong>Overlays</strong> — Drag a video or image onto the canvas. 12 blend modes, opacity control, cover/contain/stretch fit.</div>
                     <div class="help-tip"><strong>Layers</strong> — Manage active effects with eye toggles, opacity, and blend modes. Scene layer controls video/effects/blobs.</div>
@@ -7308,14 +7392,14 @@
 </div>
 
 <!-- App modules (order matters: core → fx → audio → timeline → mask → tracking) -->
-<script src="hod-core.js?v=20260427b"></script>
+<script src="hod-core.js?v=20260527a"></script>
 <script src="hod-fx.js?v=20260419"></script>
 <script src="hod-shader-fx.js?v=20260419"></script>
 <script src="hod-overlay.js?v=20260419"></script>
 <script src="hod-audio.js?v=20260427b"></script>
 <script src="hod-timeline.js?v=20260427b"></script>
 <script src="hod-mask.js?v=20260419"></script>
-<script src="hod-tracking.js?v=20260419"></script>
+<script src="hod-tracking.js?v=20260527a"></script>
 <script src="hod-hands.js?v=20260422e"></script>
 <script src="hod-region-fx.js?v=20260419"></script>
 

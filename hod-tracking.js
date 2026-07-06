@@ -8,10 +8,14 @@ let _cachedCandidates = null; // reuse candidates when video is paused
 
 // 4A: Adaptive grid resolution — coarser scan when fewer blobs needed
 function adaptiveGridSize(w) {
-    let baseGrid = w > 1280 ? 30 : 15;
+    let baseGrid = w > 1280 ? 36 : 22;
+    if (typeof _adaptiveQuality !== 'undefined' && _adaptiveQuality > 0) {
+        baseGrid += _adaptiveQuality * 8;
+    }
+    if (currentMode === 12) baseGrid += 6; // Flicker stays useful on a coarser scan.
     let q = paramValues[0];
     if (q <= 10) return baseGrid * 2;       // few blobs → coarse scan
-    if (q >= 80) return max(8, baseGrid - 5); // many blobs → fine scan
+    if (q >= 80) return max(12, baseGrid - 5); // many blobs → fine scan
     return baseGrid;
 }
 
@@ -455,9 +459,13 @@ function trackPoints() {
         let candidates = [];
         for (let faceIdx = 0; faceIdx < faceLandmarkCache.length; faceIdx++) {
             const landmarks = faceLandmarkCache[faceIdx];
-            const landmarkList = indices
+            let landmarkList = indices
                 ? indices.filter(i => i < landmarks.length).map(i => landmarks[i])
                 : landmarks;
+            if (!indices && landmarkList.length > 140) {
+                const stride = Math.ceil(landmarkList.length / 140);
+                landmarkList = landmarkList.filter((_, i) => i % stride === 0);
+            }
 
             for (const lm of landmarkList) {
                 // MediaPipe landmarks are normalized [0,1]
@@ -487,7 +495,7 @@ function trackPoints() {
                 mx = Math.max(0, Math.min(w - 1, mx));
                 my = Math.max(0, Math.min(h - 1, my));
                 let idx = (mx + my * w) * 4;
-                let r = videoEl.pixels[idx], g = videoEl.pixels[idx + 1], b_v = videoEl.pixels[idx + 2];
+                let r = _facePixelData[idx], g = _facePixelData[idx + 1], b_v = _facePixelData[idx + 2];
                 extras.push(new CandidatePoint(mx, my, color(r, g, b_v)));
             }
             candidates.push(...extras);

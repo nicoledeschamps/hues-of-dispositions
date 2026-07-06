@@ -111,12 +111,12 @@ Targeting 2026. Needs: .gitignore (cert.pem/key.pem in repo!), favicon, hosting 
 - **FX browsing decoupled**: selecting/cycling effects does NOT auto-enable them
 - **Multi-agent harness**: `/harness` slash command runs plan→build→evaluate pipeline with Playwright QA
 - **Cache busting**: Always update `?v=` query strings when changing JS files
-- **Git**: Single `main` branch, `gh` CLI at `~/bin/gh`, auth as nicoledeschamps1-crypto
+- **Git**: Single `main` branch, `gh` CLI at `~/bin/gh`, auth as nicoledeschamps
 
 ## People & Connections
 - **Nicole Deschamps** (HUESOFSATURN) — creator, sole developer
 - **@pbltrr** — original "Browser Blob Tracking" source code (Patreon: patreon.com/pbltrr)
-- **GitHub**: nicoledeschamps1-crypto/blob-tracking-project
+- **GitHub**: nicoledeschamps/hues-of-dispositions
 
 ## What to Notice (Proactive Surfacing)
 - **Uncommitted work**: 4 files modified since last commit (2026-03-24). Multiple sessions of work not yet committed.

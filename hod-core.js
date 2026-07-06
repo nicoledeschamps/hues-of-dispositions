@@ -35,11 +35,13 @@ let trackBoxWeight = 1.2;      // box stroke weight
 let currentMode = 0;      // start with tracking OFF — user enables explicitly
 let _userMode = 0;        // user's UI-selected mode (survives timeline overrides)
 let _userCustomHue = 195; // user's UI-selected custom hue
+let _trackingLastMode = 5; // restore Color Detect when toggling detection back on
+let _colorDetectPreset = 'custom';
 let currentParam = 0;
 
 const DEFAULT_CONFIG = {
-    parametros: [15, 30, 40, 3, 20, 4, 40, 50],
-    modo: 1,
+    parametros: [10, 30, 40, 3, 20, 8, 40, 50],
+    modo: 5,
     linhas: false,
     viz: 1
 };
@@ -522,16 +524,16 @@ let _cachedBeatMarkers = [];
 let _cachedBeatKey = '';
 
 const MODE_NAMES = {
-    0:'Off', 1:'Blue', 2:'Red', 3:'Motion', 4:'Skin', 5:'Custom',
-    6:'Bright', 7:'Dark', 8:'Edge', 9:'Chroma', 10:'Warm', 11:'Cool',
-    12:'Flicker', 13:'Invert', 14:'Mask', 15:'Eyes', 16:'Lips', 17:'Face',
+    0:'Off', 1:'Color Detect', 2:'Color Detect', 3:'Motion', 4:'Skin', 5:'Color Detect',
+    6:'Bright', 7:'Dark', 8:'Edge', 9:'Chroma', 10:'Color Detect', 11:'Color Detect',
+    12:'Flicker', 13:'Color Detect', 14:'Mask', 15:'Eyes', 16:'Lips', 17:'Face',
     19:'BG Sub'
 };
 
 // Face landmark tracking state (MediaPipe Face Landmarker)
 let faceLandmarkCache = null;   // cached landmark results
 let faceDetectFrame = 0;        // frame counter for throttled detection
-const FACE_DETECT_INTERVAL = 3; // detect every 3rd frame to reduce CPU load (smoothing fills gaps)
+const FACE_DETECT_INTERVAL = 4; // detect every 4th frame to reduce CPU load (smoothing fills gaps)
 
 // Landmark smoothing (EMA — exponential moving average)
 let smoothedLandmarks = null;   // smoothed landmark positions per face
@@ -1821,6 +1823,7 @@ let autoGainMax = { band: AUTO_GAIN_FLOOR, bass: AUTO_GAIN_FLOOR, mid: AUTO_GAIN
 
 // Debug panel visibility (toggle with 'D' key)
 let debugVisible = false;
+let auditVisible = false;
 let _syncUIFrameCount = 0;
 
 // Beat detection state
@@ -2537,6 +2540,7 @@ function draw() {
     cursor();
     renderMiniSpectrum();
     if (debugVisible && frameCount % 10 === 0) renderDebug();
+    if (auditVisible && frameCount % 10 === 0) renderAuditPanel();
     if (frameCount % 6 === 0) updateTopBar();
 
     // Copy to recording canvas — composite: native video crop + effects/blobs overlay
@@ -2866,6 +2870,44 @@ function draw() {
 
 // switchToTab() removed — section nav is sole controller (use switchSection())
 
+function isColorDetectMode(mode) {
+    return mode === 1 || mode === 2 || mode === 5 || mode === 10 || mode === 11 || mode === 13;
+}
+
+function isFaceTrackMode(mode) {
+    return mode >= 15 && mode <= 17;
+}
+
+function setTrackingMode(newMode, opts = {}) {
+    if (isNaN(newMode)) return;
+    currentMode = newMode;
+    _userMode = currentMode;
+    if (currentMode > 0) _trackingLastMode = currentMode;
+    if (!opts.keepTrackTab) window._trackTabUserSelected = false;
+    if (currentMode === 3) prevGridPixels = {};
+    if (currentMode === 12) flickerScores = {};
+    _persistentBlobs = [];
+    _nextBlobId = 1;
+    if (!isFaceTrackMode(currentMode)) {
+        faceLandmarkCache = null;
+        smoothedLandmarks = null;
+    }
+    if (currentMode === 14) {
+        enterMaskSelecting();
+        if (window.initSegmenterLazy) window.initSegmenterLazy();
+    } else {
+        exitMaskMode();
+    }
+    if (isFaceTrackMode(currentMode) && window.initFaceLandmarkerLazy) {
+        window.initFaceLandmarkerLazy();
+    }
+    const tt = document.getElementById('tracking-toggle');
+    if (tt && currentMode > 0 && !tt.checked) tt.checked = true;
+    const bgCtrl = document.getElementById('bg-sub-controls');
+    if (bgCtrl) bgCtrl.style.display = (currentMode === 19) ? '' : 'none';
+    updateButtonStates();
+}
+
 function setupCoreUIListeners() {
 
     // Collapsible section toggles
@@ -2899,6 +2941,12 @@ function setupCoreUIListeners() {
             document.querySelectorAll('.tracking-tab-content').forEach(panel => {
                 panel.classList.toggle('active', panel.dataset.trackTab === tabId);
             });
+            if (tabId === 'color' && !isColorDetectMode(currentMode)) {
+                _colorDetectPreset = 'custom';
+                setTrackingMode(5, { keepTrackTab: true });
+            } else if (tabId === 'ai' && !isFaceTrackMode(currentMode)) {
+                setTrackingMode(17, { keepTrackTab: true });
+            }
         });
     });
 
@@ -2908,14 +2956,12 @@ function setupCoreUIListeners() {
     const detectionTuningSection = document.getElementById('detection-tuning-section');
     const displaySection = document.getElementById('display-section');
     const advancedTrackingSection = document.getElementById('advanced-tracking-section');
-    let _trackingLastMode = 1; // remember last mode when toggling back on (default: BLUE)
     if (trackingToggle) {
         trackingToggle.addEventListener('change', () => {
             const isOn = trackingToggle.checked;
             if (isOn) {
                 // Restore last mode
-                currentMode = _trackingLastMode;
-                _userMode = currentMode;
+                setTrackingMode(_trackingLastMode || 5);
                 if (trackingBody) trackingBody.classList.remove('tracking-off');
                 if (detectionTuningSection) detectionTuningSection.style.display = '';
                 if (displaySection) displaySection.style.display = '';
@@ -2931,12 +2977,6 @@ function setupCoreUIListeners() {
                 if (displaySection) displaySection.style.display = 'none';
                 if (advancedTrackingSection) advancedTrackingSection.style.display = 'none';
             }
-            if (currentMode === 3) prevGridPixels = {};
-            if (currentMode === 12) flickerScores = {};
-            if (currentMode < 15 || currentMode > 17) { faceLandmarkCache = null; smoothedLandmarks = null; }
-            if (currentMode === 14) { enterMaskSelecting(); if (window.initSegmenterLazy) window.initSegmenterLazy(); }
-            if (currentMode >= 15 && currentMode <= 17 && window.initFaceLandmarkerLazy) window.initFaceLandmarkerLazy();
-            ui.customColorGroup.style.display = (currentMode === 5 || currentMode === 13) ? '' : 'none';
             updateButtonStates();
         });
     }
@@ -3356,7 +3396,7 @@ function setupCoreUIListeners() {
         if (section === 'track') {
             const tracking = disc.tracking;
             return { title: tracking ? 'Tracking is live. Sequence next.' : 'Choose a tracker and lock onto motion.', body: tracking ? 'A short timeline cue lane will add intention.' : 'Start with the detector family, then pick a mode.', action: tracking ? 'go-timeline' : '', actionLabel: tracking ? '\u2192 Timeline' : '\u2192 Detect', badge: tracking ? 'Tracker live' : 'Detect next',
-                steps: [{ t:'Choose a family', d:'Color, Analysis, or AI.', done:true, cur:false, act:'' },{ t:'Pick a mode', d:'Lock onto a subject or motion field.', done:tracking, cur:!tracking, act:'' },{ t:'Style overlay', d:'Choose blob style + viz mode.', done:tracking, cur:false, act:'' },{ t:'Move to timeline', d:'Sequence tracking over time.', done:false, cur:tracking, act:'go-timeline' }] };
+                steps: [{ t:'Choose a family', d:'Color, Analysis, or Face.', done:true, cur:false, act:'' },{ t:'Pick a mode', d:'Lock onto a subject or motion field.', done:tracking, cur:!tracking, act:'' },{ t:'Style overlay', d:'Choose blob style + viz mode.', done:tracking, cur:false, act:'' },{ t:'Move to timeline', d:'Sequence tracking over time.', done:false, cur:tracking, act:'go-timeline' }] };
         }
 
         if (section === 'timeline') {
@@ -3655,7 +3695,7 @@ function setupCoreUIListeners() {
         { section: 'create', targetId: 'guide-rail',        title: 'Your Guide',       body: 'The guide rail shows one smart suggestion at a time and tracks your discovery progress.' },
         { section: 'audio',  targetId: 'audio-source-row',  title: 'Audio Source',      body: 'Choose FILE, MIC, or VIDEO as the sound input. Audio sync is the heart of H.O.D.' },
         { section: 'audio',  targetId: 'audio-sync-toggle', title: 'Sync Toggle',       body: 'Turn Sync ON and map targets like MIX, QTY, HUE, PULSE. Sound drives the visuals.' },
-        { section: 'track',  targetId: 'tracking-modes',    title: 'Tracking Modes',    body: 'Color, Analysis, and AI families each detect motion differently. Pick one to start.' },
+        { section: 'track',  targetId: 'tracking-modes',    title: 'Tracking Modes',    body: 'Color Detect, Analysis, and Face Track each lock onto motion differently. Pick one to start.' },
         { section: 'export', targetId: 'tb-record-group',   title: 'Record',            body: 'Hit the record button to capture everything \u2014 effects, tracking, and audio sync.' }
     ];
 
@@ -4013,30 +4053,8 @@ function setupCoreUIListeners() {
             e.stopPropagation();
             let newMode = parseInt(btn.dataset.value);
             if (isNaN(newMode)) return;
-            currentMode = newMode;
-            _userMode = currentMode;
-            window._trackTabUserSelected = false; // allow auto-tab-switch to match new mode
-            if (currentMode === 3) prevGridPixels = {};
-            if (currentMode === 12) flickerScores = {};
-            _persistentBlobs = []; _nextBlobId = 1; // reset persistence on mode change
-            if (currentMode < 15 || currentMode > 17) { faceLandmarkCache = null; smoothedLandmarks = null; }
-            ui.customColorGroup.style.display = (currentMode === 5 || currentMode === 13) ? '' : 'none';
-            if (currentMode === 14) {
-                enterMaskSelecting();
-                if (window.initSegmenterLazy) window.initSegmenterLazy();
-            } else {
-                exitMaskMode();
-            }
-            if (currentMode >= 15 && currentMode <= 17) {
-                if (window.initFaceLandmarkerLazy) window.initFaceLandmarkerLazy();
-            }
-            // BG SUB controls visibility
-            let bgCtrl = document.getElementById('bg-sub-controls');
-            if (bgCtrl) bgCtrl.style.display = (currentMode === 19) ? '' : 'none';
-            // Ensure tracking stays on when selecting a mode
-            let tt = document.getElementById('tracking-toggle');
-            if (tt && !tt.checked) tt.checked = true;
-            updateButtonStates();
+            if (newMode === 5) _colorDetectPreset = 'custom';
+            setTrackingMode(newMode);
         });
     });
 
@@ -4104,6 +4122,40 @@ function setupCoreUIListeners() {
         let c = color(r, g, b);
         customHue = hue(c);
         _userCustomHue = customHue;
+        _colorDetectPreset = 'custom';
+        if (!isColorDetectMode(currentMode)) setTrackingMode(5, { keepTrackTab: true });
+        else updateButtonStates();
+    });
+
+    document.querySelectorAll('[data-color-preset]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const preset = btn.dataset.colorPreset;
+            _colorDetectPreset = preset;
+            if (preset === 'red') {
+                customHue = 0; _userCustomHue = customHue;
+                if (ui.customColorPicker) ui.customColorPicker.value = '#ff3b3b';
+                setTrackingMode(5);
+            } else if (preset === 'blue') {
+                customHue = 210; _userCustomHue = customHue;
+                if (ui.customColorPicker) ui.customColorPicker.value = '#00b7eb';
+                setTrackingMode(5);
+            } else if (preset === 'warm') {
+                setTrackingMode(10);
+            } else if (preset === 'cool') {
+                setTrackingMode(11);
+            } else if (preset === 'invert') {
+                setTrackingMode(13);
+            }
+        });
+    });
+
+    document.querySelectorAll('[data-face-mode]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const mode = parseInt(btn.dataset.faceMode);
+            setTrackingMode(mode);
+        });
     });
 
     ui.vizButtons.forEach(btn => {
@@ -4666,15 +4718,15 @@ function setupCoreUIListeners() {
 // ── STATUS ROW ───────────────────────────
 
 const _MODE_NAMES = {
-    0:'Off', 1:'Blue', 2:'Red', 3:'Motion', 4:'Skin', 5:'Custom', 6:'Bright',
-    7:'Dark', 8:'Edge', 9:'Chroma', 10:'Warm', 11:'Cool', 12:'Flicker',
-    13:'Invert', 14:'Mask', 15:'Eyes', 16:'Lips', 17:'Face', 19:'BG Sub'
+    0:'Off', 1:'Color Detect', 2:'Color Detect', 3:'Motion', 4:'Skin', 5:'Color Detect', 6:'Bright',
+    7:'Dark', 8:'Edge', 9:'Chroma', 10:'Color Detect', 11:'Color Detect', 12:'Flicker',
+    13:'Color Detect', 14:'Mask', 15:'Eyes', 16:'Lips', 17:'Face', 19:'BG Sub'
 };
 const _MODE_FAMILY = {
     1:'Color', 2:'Color', 5:'Color', 10:'Color', 11:'Color', 13:'Color',
     3:'Analysis', 4:'Analysis', 6:'Analysis', 7:'Analysis', 8:'Analysis',
     9:'Analysis', 12:'Analysis', 19:'Analysis',
-    14:'AI', 15:'AI', 16:'AI', 17:'AI'
+    14:'AI', 15:'Face', 16:'Face', 17:'Face'
 };
 function _updateTrackingStatusRow() {
     const famEl = document.getElementById('tracking-status-family');
@@ -4690,9 +4742,12 @@ function _updateTrackingStatusRow() {
     famEl.textContent = _MODE_FAMILY[currentMode] || '—';
     modeEl.textContent = _MODE_NAMES[currentMode] || '—';
     // Status hints
-    if (currentMode === 14) {
+    if (isColorDetectMode(currentMode)) {
+        const preset = _colorDetectPreset && _colorDetectPreset !== 'custom' ? _colorDetectPreset : 'sampled';
+        stateEl.textContent = preset.charAt(0).toUpperCase() + preset.slice(1);
+    } else if (currentMode === 14) {
         stateEl.textContent = maskReady ? 'Tracking' : 'Click subject';
-    } else if (currentMode >= 15 && currentMode <= 17) {
+    } else if (isFaceTrackMode(currentMode)) {
         stateEl.textContent = (faceLandmarkCache && faceLandmarkCache.length > 0)
             ? faceLandmarkCache.length + ' face' + (faceLandmarkCache.length > 1 ? 's' : '')
             : (window.mpFaceLandmarkerReady ? 'No face' : 'Loading...');
@@ -4708,8 +4763,8 @@ function _updateTrackingStatusRow() {
 function updateButtonStates() {
 
     ui.modeButtons.forEach(btn => {
-        if (parseInt(btn.dataset.value) === currentMode) btn.classList.add('active');
-        else btn.classList.remove('active');
+        const modeValue = parseInt(btn.dataset.value);
+        btn.classList.toggle('active', modeValue === currentMode);
     });
 
     // Sync tracking toggle with current mode
@@ -4729,8 +4784,8 @@ function updateButtonStates() {
     if (currentMode > 0 && !window._trackTabUserSelected) {
         if (window._trackTabLastMode !== currentMode) {
             window._trackTabLastMode = currentMode;
-            const analysisModes = [3,6,7,8,9,12,4,19];
-            const aiModes = [14,15,16,17];
+            const analysisModes = [3,6,7,12];
+            const aiModes = [15,16,17];
             let targetTab = 'color';
             if (analysisModes.includes(currentMode)) targetTab = 'analysis';
             else if (aiModes.includes(currentMode)) targetTab = 'ai';
@@ -4748,7 +4803,14 @@ function updateButtonStates() {
     _updateTrackingStatusRow();
 
     // Mode-specific inline controls
-    ui.customColorGroup.style.display = (currentMode === 5 || currentMode === 13) ? '' : 'none';
+    ui.customColorGroup.style.display = '';
+    document.querySelectorAll('[data-color-preset]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.colorPreset === _colorDetectPreset);
+    });
+    const colorState = document.getElementById('color-detect-state');
+    if (colorState) {
+        colorState.textContent = _colorDetectPreset === 'custom' ? 'Sampled/manual' : _colorDetectPreset;
+    }
 
     ui.vizButtons.forEach(btn => {
         let val = parseInt(btn.dataset.value);
@@ -4762,7 +4824,7 @@ function updateButtonStates() {
     });
 
     // Mask controls visibility
-    document.getElementById('mask-controls-group').style.display = (currentMode === 14) ? '' : 'none';
+    document.getElementById('mask-controls-group').style.display = 'none';
     if (currentMode === 14) {
         let statusEl = document.getElementById('mask-status');
         let hintEl = document.getElementById('mask-hint');
@@ -4778,8 +4840,11 @@ function updateButtonStates() {
     }
 
     // Face tracking controls visibility
-    const isFaceMode = currentMode >= 15 && currentMode <= 17;
+    const isFaceMode = isFaceTrackMode(currentMode);
     document.getElementById('face-controls-group').style.display = isFaceMode ? '' : 'none';
+    document.querySelectorAll('[data-face-mode]').forEach(btn => {
+        btn.classList.toggle('active', parseInt(btn.dataset.faceMode) === currentMode);
+    });
     if (isFaceMode) {
         let fStatusEl = document.getElementById('face-status');
         let fHintEl = document.getElementById('face-hint');
@@ -4942,8 +5007,8 @@ function updateTopBar() {
                 el.fps.textContent = fps + ' FPS' + (_adaptiveQuality > 0 ? ' ⚡' : '');
                 el.fps.className = 'tb-status tb-fps ' + (fps >= 30 ? 'good' : fps >= 15 ? 'warn' : 'bad');
             }
-            // Adaptive quality: auto-reduce when sustained low FPS on mobile
-            if (_isMobileDevice && videoPlaying) {
+            // Adaptive quality: auto-reduce when sustained low FPS
+            if (videoPlaying) {
                 if (fps < _LOW_FPS_THRESHOLD) {
                     _lowFpsCount++;
                     if (_lowFpsCount >= _LOW_FPS_TRIGGER && _adaptiveQuality < 2) {
@@ -5037,6 +5102,25 @@ function updateFxParamVisibility() {
     if (typeof showFxParams === 'function' && currentViewedEffect) {
         showFxParams(currentViewedEffect);
     }
+}
+
+function renderAuditPanel() {
+    const el = document.getElementById('audit-panel');
+    if (!el) return;
+    const fps = Math.round(frameRate());
+    const mode = MODE_NAMES[currentMode] || 'Off';
+    const fxCount = activeEffects ? activeEffects.size : 0;
+    const pointCount = trackedPoints ? trackedPoints.length : 0;
+    const note = fps < 20 && (videoLoaded || usingWebcam)
+        ? 'Low FPS: reduce effects or tracking quantity'
+        : (_adaptiveQuality > 0 ? 'Adaptive quality level ' + _adaptiveQuality : 'Stable');
+    el.innerHTML =
+        '<div class="audit-title">Audit</div>' +
+        '<div class="audit-row"><span class="audit-label">FPS</span><span class="audit-val">' + fps + '</span></div>' +
+        '<div class="audit-row"><span class="audit-label">Mode</span><span class="audit-val">' + mode + '</span></div>' +
+        '<div class="audit-row"><span class="audit-label">FX</span><span class="audit-val">' + fxCount + '</span></div>' +
+        '<div class="audit-row"><span class="audit-label">Points</span><span class="audit-val">' + pointCount + '</span></div>' +
+        '<div class="audit-note">' + note + '</div>';
 }
 
 function updateEffectCardStates() {
@@ -5186,7 +5270,7 @@ let _isMobileDevice = /iPhone|iPad|iPod|Android/.test(navigator.userAgent);
 let _adaptiveQuality = 0;       // 0=full, 1=reduced CPU effects, 2=reduced resolution
 let _lowFpsCount = 0;           // consecutive low-FPS frames
 const _LOW_FPS_THRESHOLD = 25;  // below this = "low"
-const _LOW_FPS_TRIGGER = 90;    // frames of sustained low FPS before adapting
+const _LOW_FPS_TRIGGER = 45;    // low-FPS samples before adapting
 let _canvasBaseW = 0;  // fixed canvas resolution on mobile
 let _canvasBaseH = 0;
 
@@ -5253,7 +5337,7 @@ function startWebcam(deviceId, facingMode) {
     hideTimeline();
     ui.webcamBtn.classList.add('active');
     ui.fileName.innerText = 'webcam active';
-    currentMode = 1; _userMode = 1;
+    currentMode = 5; _userMode = 5; _trackingLastMode = 5;
 
     // Build constraints: deviceId > facingMode > default.
     // When an explicit facingMode is requested (camera flip), honor it over the
@@ -5575,6 +5659,13 @@ function toggleRecording() {
 }
 
 function startRecording() {
+    // Guard: a source must be loaded, otherwise videoW/H are undefined and the
+    // recording canvas gets a zero/NaN size — producing an invalid capture.
+    if (!videoLoaded || !videoEl || !isFinite(videoW) || videoW <= 0 || !isFinite(videoH) || videoH <= 0) {
+        let tbRec = document.getElementById('tb-record');
+        if (tbRec) { tbRec.style.borderColor = '#ff4444'; setTimeout(() => { tbRec.style.borderColor = ''; }, 600); }
+        return;
+    }
     initAudioContext();
     // Use original video resolution for recording (sharp output)
     let pd = pixelDensity();
@@ -5659,16 +5750,11 @@ function stopRecording() {
         recordingAudioDest = null;
     }
     isRecording = false;
-    // Guard: a source must be loaded, otherwise videoW/H are undefined and the
-    // recording canvas gets a zero/NaN size — producing an invalid capture.
-    if (!videoLoaded || !videoEl || !isFinite(videoW) || videoW <= 0 || !isFinite(videoH) || videoH <= 0) {
-        let tbRec = document.getElementById('tb-record');
-        if (tbRec) { tbRec.style.borderColor = '#ff4444'; setTimeout(() => { tbRec.style.borderColor = ''; }, 600); }
-        return;
-    }
     recordingStartTime = 0;
     recordingCanvas = null;
     recordingCtx = null;
+    // Stop the canvas capture track so it doesn't stay alive across recordings
+    if (recordingVideoTrack) { try { recordingVideoTrack.stop(); } catch(e) {} }
     recordingVideoTrack = null;
     if (ui.btnRecord) { ui.btnRecord.classList.remove('recording'); ui.btnRecord.innerHTML = `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg> Record`; }
     if (ui.tlBtnRecord) { ui.tlBtnRecord.classList.remove('recording'); ui.tlBtnRecord.innerHTML = `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg>`; }
@@ -5694,6 +5780,8 @@ function saveRecording() {
 
 function saveScreenshot() {
     if (!p5Canvas) return;
+    // No source drawn yet → videoX/Y/W/H are undefined and getImageData would throw
+    if (!videoLoaded || !isFinite(videoW) || videoW <= 0 || !isFinite(videoH) || videoH <= 0) return;
     let sx = Math.round(videoX * pixelDensity());
     let sy = Math.round(videoY * pixelDensity());
     let sw = Math.round(videoW * pixelDensity());
@@ -5744,19 +5832,15 @@ function keyPressed(event) {
     if (keyCode === ESCAPE && window._closeAllDrawers && document.querySelector('.drawer-open')) { window._closeAllDrawers(); return false; }
     // Undo accidental click-to-track color pick
     if (keyCode === ESCAPE && currentMode === 5 && window._prevModeBeforeColorPick != null) {
-        currentMode = window._prevModeBeforeColorPick;
-        _userMode = window._prevUserModeBeforeColorPick;
+        const restoreMode = window._prevModeBeforeColorPick;
         window._prevModeBeforeColorPick = null;
         window._prevUserModeBeforeColorPick = null;
-        if (currentMode !== 5) document.getElementById('custom-color-group').style.display = 'none';
-        updateButtonStates();
+        setTrackingMode(restoreMode);
         return false;
     }
 
     // Block all other keys while help or settings is open
     if (_helpVisible || _settingsVisible) return false;
-    // Stop the canvas capture track so it doesn't stay alive across recordings
-    if (recordingVideoTrack) { try { recordingVideoTrack.stop(); } catch(e) {} }
 
     let changed = false;
 
@@ -5782,8 +5866,6 @@ function keyPressed(event) {
     if (key === 'r' || key === 'R') { restartVideo(); return false; }
 
     if (key === 'w' || key === 'W') {
-    // No source drawn yet → videoX/Y/W/H are undefined and getImageData would throw
-    if (!videoLoaded || !isFinite(videoW) || videoW <= 0 || !isFinite(videoH) || videoH <= 0) return;
         navIndex = (navIndex - 1 + navOrder.length) % navOrder.length;
         currentParam = navOrder[navIndex];
         return false;
@@ -5794,25 +5876,23 @@ function keyPressed(event) {
         return false;
     }
 
-    if ((key === 'z' || key === 'Z' || key === '1') && !e.metaKey && !e.ctrlKey) { exitMaskMode(); currentMode = 1; _userMode = 1; ui.customColorGroup.style.display = 'none'; changed = true; }
-    if ((key === 'x' || key === 'X' || key === '2') && !e.metaKey && !e.ctrlKey) { exitMaskMode(); currentMode = 2; _userMode = 2; ui.customColorGroup.style.display = 'none'; changed = true; }
-    if (key === '0') { exitMaskMode(); currentMode = 0; _userMode = 0; ui.customColorGroup.style.display = 'none'; changed = true; }
-    if (key === '3') { exitMaskMode(); currentMode = 3; _userMode = 3; prevGridPixels = {}; ui.customColorGroup.style.display = 'none'; changed = true; }
-    if (key === '4') { exitMaskMode(); currentMode = 4; _userMode = 4; ui.customColorGroup.style.display = 'none'; changed = true; }
-    if (key === '5') { exitMaskMode(); currentMode = 5; _userMode = 5; ui.customColorGroup.style.display = ''; changed = true; }
-    if (key === '6') { exitMaskMode(); currentMode = 6; _userMode = 6; ui.customColorGroup.style.display = 'none'; changed = true; }
-    if (key === '7') { exitMaskMode(); currentMode = 7; _userMode = 7; ui.customColorGroup.style.display = 'none'; changed = true; }
-    if (key === '8') { exitMaskMode(); currentMode = 8; _userMode = 8; ui.customColorGroup.style.display = 'none'; changed = true; }
-    if (key === '9') { exitMaskMode(); currentMode = 9; _userMode = 9; ui.customColorGroup.style.display = 'none'; changed = true; }
-    if (key === 'm' || key === 'M') { currentMode = 14; _userMode = 14; enterMaskSelecting(); changed = true; }
+    if ((key === 'z' || key === 'Z' || key === '1') && !e.metaKey && !e.ctrlKey) { _colorDetectPreset = 'blue'; customHue = 210; _userCustomHue = customHue; if (ui.customColorPicker) ui.customColorPicker.value = '#00b7eb'; setTrackingMode(5); changed = true; }
+    if ((key === 'x' || key === 'X' || key === '2') && !e.metaKey && !e.ctrlKey) { _colorDetectPreset = 'red'; customHue = 0; _userCustomHue = customHue; if (ui.customColorPicker) ui.customColorPicker.value = '#ff3b3b'; setTrackingMode(5); changed = true; }
+    if (key === '0') { setTrackingMode(0); changed = true; }
+    if (key === '3') { setTrackingMode(3); changed = true; }
+    if (key === '4') { setTrackingMode(6); changed = true; }
+    if (key === '5') { setTrackingMode(7); changed = true; }
+    if (key === '6') { setTrackingMode(12); changed = true; }
+    if (key === '7') { setTrackingMode(17); changed = true; }
+    if (key === '8') { setTrackingMode(15); changed = true; }
+    if (key === '9') { setTrackingMode(16); changed = true; }
     // Auto-switch to TRACK tab when mode keys pressed
-    if (/^[0-9zxm]$/i.test(key) && !e.metaKey && !e.ctrlKey && changed) switchSection('track');
+    if (/^[0-9zx]$/i.test(key) && !e.metaKey && !e.ctrlKey && changed) switchSection('track');
     if (key === 'l' || key === 'L') { showLines = !showLines; changed = true; }
 
     if (keyCode === ESCAPE && currentMode === 14) {
         exitMaskMode();
-        currentMode = 1; _userMode = 1;
-        ui.customColorGroup.style.display = 'none';
+        setTrackingMode(5);
         changed = true;
     }
 
@@ -5823,6 +5903,13 @@ function keyPressed(event) {
         }
         switchSection('audio');
         changed = true;
+    }
+
+    if ((key === 'g' || key === 'G') && e.shiftKey) {
+        auditVisible = !auditVisible;
+        let ap = document.getElementById('audit-panel');
+        if (ap) ap.classList.toggle('visible', auditVisible);
+        return false;
     }
 
     if (key === 'g' || key === 'G') {
@@ -6127,10 +6214,8 @@ function mousePressed(evt) {
             let picker = document.getElementById('custom-color-picker');
             if (picker) picker.value = hex;
             // Switch to CUSTOM mode
-            currentMode = 5;
-            _userMode = 5;
-            document.getElementById('custom-color-group').style.display = '';
-            updateButtonStates();
+            _colorDetectPreset = 'custom';
+            setTrackingMode(5, { keepTrackTab: true });
         }
     }
     return false;
@@ -6261,8 +6346,8 @@ function _showTouchContextMenu(cx, cy) {
         { label: 'Track This Color', action: () => {
             let c = get(Math.round(mouseX), Math.round(mouseY));
             customHue = hue(c); _userCustomHue = customHue;
-            currentMode = 5; _userMode = 5;
-            updateButtonStates();
+            _colorDetectPreset = 'custom';
+            setTrackingMode(5, { keepTrackTab: true });
         }},
         { label: 'Reset Tracking', action: () => {
             currentMode = 0; _userMode = 0;

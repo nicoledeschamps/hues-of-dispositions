@@ -5,8 +5,8 @@
 
 **Use case**: Creative video effects for social media, garment/fabric display, artistic video processing. Comparable tools: effect.app, Grainrad.com, CapCut, VSCO.
 
-**GitHub**: nicoledeschamps1-crypto/hues-of-dispositions
-**Live**: nicoledeschamps1-crypto.github.io/hues-of-dispositions/
+**GitHub**: nicoledeschamps/hues-of-dispositions
+**Live**: nicoledeschamps.github.io/hues-of-dispositions/
 
 ## Architecture
 - **Pure client-side JS** — no build step, no bundler, no framework
