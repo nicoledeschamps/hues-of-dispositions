@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Text Rain — Hues of Dispositions</title>
+<style>
+  :root {
+    --tr-bg: hsl(278, 25%, 6%);
+    --tr-panel: hsla(278, 30%, 10%, 0.92);
+    --tr-border: hsl(278, 25%, 24%);
+    --tr-text: hsl(278, 15%, 88%);
+    --tr-dim: hsl(278, 10%, 55%);
+    --tr-accent: hsl(300, 80%, 60%);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: var(--tr-bg); }
+  body { font-family: 'Commit Mono', ui-monospace, Menlo, monospace; color: var(--tr-text); }
+  #stage { position: fixed; inset: 0; display: block; cursor: default; }
+  body.hide-cursor #stage { cursor: none; }
+
+  #panel {
+    position: fixed; top: 14px; left: 14px; z-index: 10;
+    background: var(--tr-panel); border: 1px solid var(--tr-border);
+    border-radius: 10px; padding: 14px 16px; width: 250px;
+    backdrop-filter: blur(6px); transition: opacity 0.3s;
+  }
+  #panel.hidden { opacity: 0; pointer-events: none; }
+  #panel h1 { font-size: 13px; letter-spacing: 0.08em; color: var(--tr-accent); margin-bottom: 2px; }
+  #panel .sub { font-size: 10px; color: var(--tr-dim); margin-bottom: 12px; }
+  #panel label { display: block; font-size: 10px; color: var(--tr-dim); margin: 10px 0 3px; letter-spacing: 0.05em; }
+  #panel input[type="range"] { width: 100%; accent-color: var(--tr-accent); }
+  #panel input[type="text"] {
+    width: 100%; background: hsl(278, 20%, 14%); border: 1px solid var(--tr-border);
+    color: var(--tr-text); border-radius: 5px; padding: 5px 7px; font: inherit; font-size: 11px;
+  }
+  #panel .row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+  #panel .row label { margin: 0; flex: 1; }
+  #panel button {
+    background: hsl(278, 30%, 18%); border: 1px solid var(--tr-border); color: var(--tr-text);
+    border-radius: 6px; padding: 6px 10px; font: inherit; font-size: 11px; cursor: pointer;
+  }
+  #panel button:hover { border-color: var(--tr-accent); }
+  #panel .keys { font-size: 9.5px; color: var(--tr-dim); margin-top: 12px; line-height: 1.7; }
+  #panel .keys b { color: var(--tr-text); }
+  #status { font-size: 10px; margin-top: 10px; color: var(--tr-dim); }
+  #status.err { color: hsl(0, 70%, 65%); }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div id="panel">
+  <h1>TEXT RAIN</h1>
+  <div class="sub">Hues of Dispositions — projector experiment</div>
+
+  <label for="phrase">PHRASE</label>
+  <input type="text" id="phrase" value="COLOR IS A FEELING THAT FALLS AND RESTS ON YOU">
+
+  <label for="threshold">SILHOUETTE THRESHOLD <span id="threshold-val"></span></label>
+  <input type="range" id="threshold" min="10" max="240" value="110">
+
+  <label for="fall-speed">FALL SPEED <span id="fall-speed-val"></span></label>
+  <input type="range" id="fall-speed" min="20" max="300" value="90">
+
+  <label for="density">LETTER DENSITY <span id="density-val"></span></label>
+  <input type="range" id="density" min="40" max="400" value="160">
+
+  <label for="letter-size">LETTER SIZE <span id="letter-size-val"></span></label>
+  <input type="range" id="letter-size" min="14" max="64" value="28">
+
+  <div class="row">
+    <label for="invert">DARK BACKGROUND (letters land on bright)</label>
+    <input type="checkbox" id="invert">
+  </div>
+  <div class="row">
+    <label for="show-video">SHOW VIDEO</label>
+    <input type="checkbox" id="show-video" checked>
+  </div>
+
+  <div class="row">
+    <button id="btn-fullscreen">FULLSCREEN [F]</button>
+    <button id="btn-reset">RESET [R]</button>
+  </div>
+
+  <div class="keys">
+    <b>H</b> hide/show panel · <b>F</b> fullscreen · <b>R</b> reset letters<br>
+    <b>D</b> debug silhouette · mirror is always on
+  </div>
+  <div id="status">starting camera…</div>
+</div>
+
+<script>
+'use strict';
+
+// ── Config / state ───────────────────────────────────────────────
+const SAMPLE_W = 160;                 // luminance grid width (height derives from aspect)
+const CLIMB_SPEED = 140;              // px/s a letter may ride upward on a rising silhouette
+const RESPAWN_JITTER = 0.35;          // fraction of fall speed randomized per letter
+const HUES = [300, 278, 320, 260, 190]; // HoD family: fuchsia/purple/magenta/violet/cyan
+
+const state = {
+  letters: [],
+  running: true,
+  demoMode: false,
+  debugSilhouette: false,
+  lastFrameMs: 0,
+  camError: null
+};
+
+const controls = {
+  phrase: 'COLOR IS A FEELING THAT FALLS AND RESTS ON YOU',
+  threshold: 110,
+  fallSpeed: 90,
+  density: 160,
+  letterSize: 28,
+  invert: false,
+  showVideo: true
+};
+
+// ── DOM ──────────────────────────────────────────────────────────
+const canvas = document.getElementById('stage');
+const ctx = canvas.getContext('2d');
+const panel = document.getElementById('panel');
+const statusEl = document.getElementById('status');
+
+const video = document.createElement('video');
+video.playsInline = true;
+video.muted = true;
+
+const sampleCanvas = document.createElement('canvas');
+const sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
+let sampleH = 90;
+let lumGrid = null;      // Uint8Array of luminance, SAMPLE_W × sampleH, already mirrored
+
+// ── Setup ────────────────────────────────────────────────────────
+function resizeCanvas() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+async function startCamera() {
+  if (new URLSearchParams(location.search).get('demo') === '1') {
+    enterDemoMode('demo mode (forced via ?demo=1)');
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    sampleH = Math.max(2, Math.round(SAMPLE_W * (video.videoHeight / video.videoWidth)) || 90);
+    sampleCanvas.width = SAMPLE_W;
+    sampleCanvas.height = sampleH;
+    setStatus('camera live — stand in frame', false);
+  } catch (err) {
+    state.camError = err;
+    enterDemoMode('no camera (' + (err.name || 'error') + ') — demo silhouette');
+  }
+}
+
+function enterDemoMode(msg) {
+  state.demoMode = true;
+  sampleH = 90;
+  sampleCanvas.width = SAMPLE_W;
+  sampleCanvas.height = sampleH;
+  setStatus(msg, false);
+}
+
+function setStatus(msg, isError) {
+  statusEl.textContent = msg;
+  statusEl.className = isError ? 'err' : '';
+}
+
+// ── Letters ──────────────────────────────────────────────────────
+function makeLetter(char, index, total) {
+  return {
+    char,
+    x: ((index + 0.5) / total) * canvas.width + (Math.random() - 0.5) * 30,
+    y: -Math.random() * canvas.height,                    // stagger entry
+    speedScale: 1 + (Math.random() - 0.5) * 2 * RESPAWN_JITTER,
+    hue: HUES[index % HUES.length] + (Math.random() - 0.5) * 20,
+    resting: false
+  };
+}
+
+function buildLetters() {
+  const chars = controls.phrase.replace(/\s+/g, ' ').trim();
+  if (!chars) { state.letters = []; return; }
+  const count = controls.density;
+  const letters = [];
+  for (let i = 0; i < count; i++) {
+    const ch = chars[i % chars.length];
+    if (ch === ' ') continue;
+    letters.push(makeLetter(ch, i, count));
+  }
+  state.letters = letters;
+}
+
+function respawn(letter) {
+  letter.y = -controls.letterSize - Math.random() * 80;
+  letter.x = Math.random() * canvas.width;
+  letter.resting = false;
+}
+
+// ── Silhouette sampling ──────────────────────────────────────────
+function updateLuminanceGrid(nowMs) {
+  if (state.demoMode) {
+    drawDemoSilhouette(nowMs);
+  } else {
+    if (video.readyState < 2) return;
+    // Mirror the video into the sample buffer so sampling space === display space.
+    sampleCtx.save();
+    sampleCtx.translate(SAMPLE_W, 0);
+    sampleCtx.scale(-1, 1);
+    sampleCtx.drawImage(video, 0, 0, SAMPLE_W, sampleH);
+    sampleCtx.restore();
+  }
+  const img = sampleCtx.getImageData(0, 0, SAMPLE_W, sampleH).data;
+  if (!lumGrid || lumGrid.length !== SAMPLE_W * sampleH) {
+    lumGrid = new Uint8Array(SAMPLE_W * sampleH);
+  }
+  for (let i = 0, p = 0; i < lumGrid.length; i++, p += 4) {
+    lumGrid[i] = (img[p] * 77 + img[p + 1] * 150 + img[p + 2] * 29) >> 8; // fast luma
+  }
+}
+
+// A letter "lands" on solid pixels. Default: solid = darker than threshold
+// (a person in front of a light wall). Invert for dark rooms / bright bodies.
+function isSolid(x, y) {
+  if (!lumGrid) return false;
+  const gx = Math.max(0, Math.min(SAMPLE_W - 1, (x / canvas.width * SAMPLE_W) | 0));
+  const gy = Math.max(0, Math.min(sampleH - 1, (y / canvas.height * sampleH) | 0));
+  const lum = lumGrid[gx + gy * SAMPLE_W];
+  return controls.invert ? lum > controls.threshold : lum < controls.threshold;
+}
+
+// Demo silhouette: a figure-eight-wandering blob "person" for camera-free testing.
+function drawDemoSilhouette(nowMs) {
+  const t = nowMs / 1000;
+  sampleCtx.fillStyle = '#e8e8e8';                        // light background
+  sampleCtx.fillRect(0, 0, SAMPLE_W, sampleH);
+  sampleCtx.fillStyle = '#141414';                        // dark "person"
+  const cx = SAMPLE_W * (0.5 + 0.28 * Math.sin(t * 0.7));
+  const cy = sampleH * (0.62 + 0.08 * Math.sin(t * 1.3));
+  sampleCtx.beginPath();
+  sampleCtx.ellipse(cx, cy, SAMPLE_W * 0.10, sampleH * 0.34, 0, 0, Math.PI * 2); // body
+  sampleCtx.ellipse(cx, cy - sampleH * 0.40, SAMPLE_W * 0.05, sampleH * 0.09, 0, 0, Math.PI * 2); // head
+  sampleCtx.fill();
+}
+
+// ── Physics ──────────────────────────────────────────────────────
+function stepLetter(letter, dt) {
+  const fall = controls.fallSpeed * letter.speedScale * dt;
+  const climbMax = CLIMB_SPEED * dt;
+
+  if (isSolid(letter.x, letter.y)) {
+    // Silhouette rose into the letter — ride the contour upward (bounded per frame).
+    let climbed = 0;
+    while (climbed < climbMax && isSolid(letter.x, letter.y)) {
+      letter.y -= 1;
+      climbed += 1;
+    }
+    letter.resting = true;
+    return;
+  }
+
+  if (isSolid(letter.x, letter.y + fall + 1)) {
+    letter.resting = true;                                 // resting on top of the silhouette
+    return;
+  }
+
+  letter.resting = false;
+  letter.y += fall;
+  if (letter.y > canvas.height + controls.letterSize) respawn(letter);
+  if (letter.y < -canvas.height * 1.5) letter.y = -controls.letterSize; // safety clamp
+}
+
+// ── Render ───────────────────────────────────────────────────────
+function drawVideoLayer() {
+  if (!controls.showVideo) return;
+  ctx.save();
+  ctx.filter = 'grayscale(1) brightness(0.8)';
+  if (state.demoMode) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(sampleCanvas, 0, 0, canvas.width, canvas.height);
+  } else if (video.readyState >= 2) {
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);                                      // mirror — matches sampling space
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  }
+  ctx.restore();
+}
+
+function drawDebugSilhouette() {
+  if (!state.debugSilhouette || !lumGrid) return;
+  ctx.save();
+  ctx.globalAlpha = 0.45;
+  const cw = canvas.width / SAMPLE_W;
+  const chh = canvas.height / sampleH;
+  ctx.fillStyle = 'hsl(120, 80%, 50%)';
+  for (let gy = 0; gy < sampleH; gy++) {
+    for (let gx = 0; gx < SAMPLE_W; gx++) {
+      const lum = lumGrid[gx + gy * SAMPLE_W];
+      const solid = controls.invert ? lum > controls.threshold : lum < controls.threshold;
+      if (solid) ctx.fillRect(gx * cw, gy * chh, cw + 1, chh + 1);
+    }
+  }
+  ctx.restore();
+}
+
+function drawLetters() {
+  ctx.font = '700 ' + controls.letterSize + 'px "Commit Mono", ui-monospace, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  for (const letter of state.letters) {
+    const light = letter.resting ? '78%' : '64%';
+    ctx.fillStyle = 'hsl(' + letter.hue + ', 85%, ' + light + ')';
+    ctx.fillText(letter.char, letter.x, letter.y);
+  }
+}
+
+// ── Main loop ────────────────────────────────────────────────────
+function frame(nowMs) {
+  const dt = Math.min((nowMs - (state.lastFrameMs || nowMs)) / 1000, 0.05);
+  state.lastFrameMs = nowMs;
+
+  updateLuminanceGrid(nowMs);
+  for (const letter of state.letters) stepLetter(letter, dt);
+
+  ctx.fillStyle = 'hsl(278, 25%, 6%)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  drawVideoLayer();
+  drawDebugSilhouette();
+  drawLetters();
+
+  requestAnimationFrame(frame);
+}
+
+// ── UI wiring ────────────────────────────────────────────────────
+function bindSlider(id, key, onChange) {
+  const el = document.getElementById(id);
+  const valEl = document.getElementById(id + '-val');
+  const apply = () => {
+    controls[key] = parseInt(el.value, 10);
+    if (valEl) valEl.textContent = el.value;
+    if (onChange) onChange();
+  };
+  el.addEventListener('input', apply);
+  apply();
+}
+
+bindSlider('threshold', 'threshold');
+bindSlider('fall-speed', 'fallSpeed');
+bindSlider('density', 'density', buildLetters);
+bindSlider('letter-size', 'letterSize');
+
+document.getElementById('phrase').addEventListener('input', e => {
+  controls.phrase = e.target.value;
+  buildLetters();
+});
+document.getElementById('invert').addEventListener('change', e => { controls.invert = e.target.checked; });
+document.getElementById('show-video').addEventListener('change', e => { controls.showVideo = e.target.checked; });
+document.getElementById('btn-reset').addEventListener('click', buildLetters);
+document.getElementById('btn-fullscreen').addEventListener('click', toggleFullscreen);
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen().catch(() => {});
+}
+
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  const k = e.key.toLowerCase();
+  if (k === 'h') {
+    panel.classList.toggle('hidden');
+    document.body.classList.toggle('hide-cursor', panel.classList.contains('hidden'));
+  } else if (k === 'f') {
+    toggleFullscreen();
+  } else if (k === 'r') {
+    buildLetters();
+  } else if (k === 'd') {
+    state.debugSilhouette = !state.debugSilhouette;
+  }
+});
+
+// ── Go ───────────────────────────────────────────────────────────
+buildLetters();
+startCamera();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
