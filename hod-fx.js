@@ -4998,25 +4998,50 @@ function _rebuildActiveEffectsList() {
     const list = document.getElementById('layers-fx-list');
     if (!list) return;
 
+    list.textContent = '';
+
     if (activeEffects.size === 0) {
-        list.innerHTML = '<span class="hint-text" style="padding:4px 0">No effects active</span>';
+        const hint = document.createElement('span');
+        hint.className = 'hint-text';
+        hint.style.padding = '4px 0';
+        hint.textContent = 'No effects active';
+        list.appendChild(hint);
         return;
     }
 
-    let html = '';
+    // Built via DOM APIs (not innerHTML) so effect names/labels are never parsed as markup.
+    // The SVG icon constants are developer-controlled and safe as innerHTML on the buttons.
     activeEffects.forEach(name => {
         let cfg = FX_UI_CONFIG[name];
         let label = cfg ? cfg.label : name.toUpperCase();
         let catColor = FX_CAT_COLORS[FX_CATEGORIES[name]] || '#4A3D60';
         let isHidden = hiddenEffects.has(name);
-        let dimClass = isHidden ? ' layers-fx-hidden' : '';
-        html += `<div class="layers-fx-item${dimClass}" style="--pp-cat-color:${catColor}">
-            <span class="layers-fx-name">${label}</span>
-            <button class="layers-fx-settings" data-effect="${name}" title="Open settings">${_settingsSvg}</button>
-            <button class="layers-fx-eye" data-effect="${name}" title="Toggle effect">${isHidden ? _eyeSvgOff : _eyeSvgOn}</button>
-        </div>`;
+
+        const item = document.createElement('div');
+        item.className = 'layers-fx-item' + (isHidden ? ' layers-fx-hidden' : '');
+        item.style.setProperty('--pp-cat-color', catColor);
+
+        const nameEl = document.createElement('span');
+        nameEl.className = 'layers-fx-name';
+        nameEl.textContent = label;
+        item.appendChild(nameEl);
+
+        const settingsBtn = document.createElement('button');
+        settingsBtn.className = 'layers-fx-settings';
+        settingsBtn.dataset.effect = name;
+        settingsBtn.title = 'Open settings';
+        settingsBtn.innerHTML = _settingsSvg;
+        item.appendChild(settingsBtn);
+
+        const eyeBtn = document.createElement('button');
+        eyeBtn.className = 'layers-fx-eye';
+        eyeBtn.dataset.effect = name;
+        eyeBtn.title = 'Toggle effect';
+        eyeBtn.innerHTML = isHidden ? _eyeSvgOff : _eyeSvgOn;
+        item.appendChild(eyeBtn);
+
+        list.appendChild(item);
     });
-    list.innerHTML = html;
 
     // Wire settings buttons — jump to effect in its category tab
     list.querySelectorAll('.layers-fx-settings').forEach(btn => {
