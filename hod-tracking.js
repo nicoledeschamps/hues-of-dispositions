@@ -359,7 +359,9 @@ function matchAndUpdateBlobs(candidates, numPoints, blobVarLevel) {
 
 function trackPoints() {
     trackedPoints = [];
-    if (currentMode === 0 || !videoLoaded || !videoPlaying) return;
+    // Note: paused video intentionally continues here — the usePauseCache branch
+    // below reuses cached candidates so blobs persist while paused (Codex audit).
+    if (currentMode === 0 || !videoLoaded) return;
 
     // FACE LANDMARK modes (EYES=15, LIPS=16, FACE=17) — uses MediaPipe landmarks but needs pixel data for color sampling
     if (currentMode >= 15 && currentMode <= 17) {

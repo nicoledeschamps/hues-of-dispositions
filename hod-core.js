@@ -2481,6 +2481,10 @@ function draw() {
             }
             drawPointInfo(p);
         }
+        // Inverted region FX renders once, outside ALL blob rects (accumulated above)
+        if (typeof flushRegionFXInverted === 'function' && regionFXEnabled && regionFXMode !== 'none') {
+            flushRegionFXInverted(document.getElementById('defaultCanvas0'));
+        }
         if (blobStyle === 'particle') _updateBlobParticles();
 
         drawingContext.restore(); // end clip

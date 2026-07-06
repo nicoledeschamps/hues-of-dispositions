@@ -509,8 +509,11 @@ function renderTimelineRuler() {
 
 // ── Audio Waveform Analysis for Timeline ───
 
+let _tlAnalysisToken = 0; // guards against stale async decodes overwriting a newer file's analysis
+
 function analyzeAudioForTimeline(file) {
     _overviewCanvasDrawn = false;
+    const analysisToken = ++_tlAnalysisToken;
     // Clear stale beat markers from previous audio
     if (_cachedBeatMarkers && _cachedBeatMarkers.length > 0) {
         _cachedBeatMarkers.forEach(el => el.remove());
@@ -519,8 +522,10 @@ function analyzeAudioForTimeline(file) {
     }
     let reader = new FileReader();
     reader.onload = function(e) {
+        if (analysisToken !== _tlAnalysisToken) return; // a newer file was selected
         initAudioContext();
         audioContext.decodeAudioData(e.target.result.slice(0), function(buffer) {
+            if (analysisToken !== _tlAnalysisToken) return; // stale decode — discard
             let sr = buffer.sampleRate;
             let raw = buffer.getChannelData(0);
             if (buffer.numberOfChannels > 1) {
@@ -603,6 +608,7 @@ function analyzeAudioForTimeline(file) {
             audioDuration = buffer.duration;
             refreshTimeline();
         }, function(err) {
+            if (analysisToken !== _tlAnalysisToken) return; // stale decode error — ignore
             console.error('Audio decode failed:', err);
             ui.audioName.innerText = 'decode error — try another file';
         });

@@ -8,6 +8,8 @@
 let regionFXEnabled = false;
 let regionFXMode = 'none';    // none, inv, pixel, thermal, blur, glitch, tone, dither, crt, edge, zoom, water, fill
 let regionFXInvert = false;   // apply OUTSIDE blob
+let _rfxInvertRects = [];     // blob rects accumulated this frame for inverted mode
+let _rfxInvertFrame = -1;     // frameCount the rect accumulator belongs to
 let regionFXFusion = false;   // 50/50 blend
 let regionFXRandom = false;   // random per blob
 let regionFXIntensity = 100;  // 0–100
@@ -259,13 +261,15 @@ precision highp float;
 in vec2 v_texCoord;
 uniform sampler2D u_texture;
 uniform float u_intensity;
+uniform vec4 u_blobRect; // x, y, w, h in 0–1 UV space (same uniform the vertex shader uses)
 out vec4 fragColor;
 void main() {
-    // Zoom toward center of region
-    vec2 center = vec2(0.5);
+    // Zoom toward the center of the blob REGION, not the full canvas.
+    // v_texCoord is absolute source UV — convert to region-local 0..1 first.
+    vec2 local = (v_texCoord - u_blobRect.xy) / u_blobRect.zw;
     float zoomFactor = mix(1.0, 3.0, u_intensity);
-    vec2 uv = center + (v_texCoord - center) / zoomFactor;
-    uv = clamp(uv, 0.0, 1.0);
+    vec2 zoomedLocal = vec2(0.5) + (local - vec2(0.5)) / zoomFactor;
+    vec2 uv = u_blobRect.xy + clamp(zoomedLocal, 0.0, 1.0) * u_blobRect.zw;
     fragColor = texture(u_texture, uv);
 }`;
 
@@ -452,7 +456,48 @@ function applyRegionFX(blob, canvasEl) {
     if (rw < 2 || rh < 2) return;
 
     let intensity = regionFXIntensity / 100;
-    _applyRegionFXCore(x1, y1, rw, rh, mode, intensity, canvasEl, regionFXInvert, regionFXFusion);
+    if (regionFXInvert) {
+        // Inverted mode applies ONE full-frame pass outside ALL blob rects.
+        // Accumulate this rect; flushRegionFXInverted() (after the blob loop) renders it.
+        if (_rfxInvertFrame !== frameCount) { _rfxInvertRects.length = 0; _rfxInvertFrame = frameCount; }
+        _rfxInvertRects.push({ x: x1, y: y1, w: rw, h: rh });
+        return;
+    }
+    _applyRegionFXCore(x1, y1, rw, rh, mode, intensity, canvasEl, false, regionFXFusion);
+}
+
+// Inverted region FX: one full-frame effect pass, clipped to exclude every blob rect
+// accumulated by applyRegionFX() this frame. Called from draw after the blob loop.
+function flushRegionFXInverted(canvasEl) {
+    if (_rfxInvertFrame !== frameCount || _rfxInvertRects.length === 0) return;
+    if (!_regionGL || !canvasEl) return;
+    let entry = _regionPrograms[regionFXMode];
+    if (!entry) return;
+    let gl = _regionGL;
+
+    // Upload p5 canvas as texture once per frame (shared guard with _applyRegionFXCore)
+    if (_regionFrameUploaded !== frameCount) {
+        gl.bindTexture(gl.TEXTURE_2D, _regionSrcTex);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvasEl);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        _regionFrameUploaded = frameCount;
+    }
+
+    let intensity = regionFXIntensity / 100;
+    _regionRenderPass(gl, entry, 0, 0, 1, 1, canvasEl.width, canvasEl.height, intensity);
+
+    let ctx = drawingContext;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    for (let r of _rfxInvertRects) ctx.rect(r.x, r.y, r.w, r.h); // even-odd excludes blob rects
+    ctx.clip('evenodd');
+    ctx.globalAlpha = regionFXFusion ? 0.5 : intensity;
+    ctx.drawImage(_regionGLCanvas, 0, 0, _REGION_SIZE, _REGION_SIZE, 0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.restore();
+    _rfxInvertRects.length = 0;
 }
 
 // Apply a region effect to an arbitrary rectangle (e.g. hand-drawn frame)
@@ -500,7 +545,13 @@ function _applyRegionFXCore(x1, y1, rw, rh, mode, intensity, canvasEl, inverted,
     let uvW = rw / cw;
     let uvH = rh / ch;
 
-    _regionRenderPass(gl, entry, uvX, uvY, uvW, uvH, cw, ch, intensity);
+    // Inverted mode processes the FULL frame (the composite clips out the blob rect);
+    // normal mode processes just the blob region.
+    if (inverted) {
+        _regionRenderPass(gl, entry, 0, 0, 1, 1, cw, ch, intensity);
+    } else {
+        _regionRenderPass(gl, entry, uvX, uvY, uvW, uvH, cw, ch, intensity);
+    }
     _compositeRegion(
         drawingContext, _regionGLCanvas,
         x1, y1, rw, rh,
@@ -557,9 +608,16 @@ function _compositeRegion(ctx, glCanvas, px, py, pw, ph, inverted, fusion, inten
         ctx.globalAlpha = intensity;
     }
 
-    // Draw the GL canvas region onto the p5 canvas
-    // Source: full GL canvas (0,0,SIZE,SIZE) → dest: blob rect
-    ctx.drawImage(glCanvas, 0, 0, _REGION_SIZE, _REGION_SIZE, px, py, pw, ph);
+    // Draw the GL canvas onto the p5 canvas
+    if (inverted) {
+        // Inverted: GL canvas holds a full-frame pass — cover the whole canvas.
+        // (Previously this drew only into the blob rect, which the even-odd clip
+        // excludes, so inverted mode rendered nothing — Codex audit region-fx:545.)
+        ctx.drawImage(glCanvas, 0, 0, _REGION_SIZE, _REGION_SIZE, 0, 0, ctx.canvas.width, ctx.canvas.height);
+    } else {
+        // Source: full GL canvas (0,0,SIZE,SIZE) → dest: blob rect
+        ctx.drawImage(glCanvas, 0, 0, _REGION_SIZE, _REGION_SIZE, px, py, pw, ph);
+    }
     ctx.restore();
 }
 
