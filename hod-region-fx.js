@@ -21,7 +21,16 @@ let _regionPrograms = {};        // compiled programs by name
 let _regionVAO = null;           // fullscreen quad VAO
 let _regionSrcTex = null;        // source texture (p5 canvas upload)
 let _regionFrameUploaded = -1;   // frameCount of last texture upload
-const _REGION_SIZE = 256;        // offscreen canvas size
+const _REGION_SIZE = 256;        // initial offscreen canvas size (grows to match p5 canvas)
+
+// Keep the GL canvas at the p5 canvas resolution so passes render at native
+// pixel size — a fixed 256² target upscaled to the canvas was visibly blurry.
+function _ensureRegionCanvasSize(cw, ch) {
+    if (_regionGLCanvas.width !== cw || _regionGLCanvas.height !== ch) {
+        _regionGLCanvas.width = cw;
+        _regionGLCanvas.height = ch;
+    }
+}
 const _REGION_MODES = ['inv', 'pixel', 'thermal', 'blur', 'glitch', 'tone', 'dither', 'crt', 'edge', 'zoom', 'water', 'fill'];
 
 // ── GLSL Shaders ─────────────────────────────────────────────
@@ -475,6 +484,8 @@ function flushRegionFXInverted(canvasEl) {
     if (!entry) return;
     let gl = _regionGL;
 
+    _ensureRegionCanvasSize(canvasEl.width, canvasEl.height);
+
     // Upload p5 canvas as texture once per frame (shared guard with _applyRegionFXCore)
     if (_regionFrameUploaded !== frameCount) {
         gl.bindTexture(gl.TEXTURE_2D, _regionSrcTex);
@@ -486,7 +497,7 @@ function flushRegionFXInverted(canvasEl) {
     }
 
     let intensity = regionFXIntensity / 100;
-    _regionRenderPass(gl, entry, 0, 0, 1, 1, canvasEl.width, canvasEl.height, intensity);
+    _regionRenderPass(gl, entry, 0, 0, 1, 1, intensity, canvasEl.width, canvasEl.height);
 
     let ctx = drawingContext;
     ctx.save();
@@ -495,7 +506,7 @@ function flushRegionFXInverted(canvasEl) {
     for (let r of _rfxInvertRects) ctx.rect(r.x, r.y, r.w, r.h); // even-odd excludes blob rects
     ctx.clip('evenodd');
     ctx.globalAlpha = regionFXFusion ? 0.5 : intensity;
-    ctx.drawImage(_regionGLCanvas, 0, 0, _REGION_SIZE, _REGION_SIZE, 0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.drawImage(_regionGLCanvas, 0, _regionGLCanvas.height - canvasEl.height, canvasEl.width, canvasEl.height, 0, 0, ctx.canvas.width, ctx.canvas.height);
     ctx.restore();
     _rfxInvertRects.length = 0;
 }
@@ -526,6 +537,8 @@ function _applyRegionFXCore(x1, y1, rw, rh, mode, intensity, canvasEl, inverted,
     let entry = _regionPrograms[mode];
     if (!entry) return;
 
+    _ensureRegionCanvasSize(canvasEl.width, canvasEl.height);
+
     // Upload p5 canvas as texture once per frame (cached across calls)
     if (_regionFrameUploaded !== frameCount) {
         gl.bindTexture(gl.TEXTURE_2D, _regionSrcTex);
@@ -546,23 +559,28 @@ function _applyRegionFXCore(x1, y1, rw, rh, mode, intensity, canvasEl, inverted,
     let uvH = rh / ch;
 
     // Inverted mode processes the FULL frame (the composite clips out the blob rect);
-    // normal mode processes just the blob region.
+    // normal mode processes just the blob region. Each pass renders at its true
+    // destination pixel size so nothing gets upscaled on composite.
+    let destW, destH;
     if (inverted) {
-        _regionRenderPass(gl, entry, 0, 0, 1, 1, cw, ch, intensity);
+        destW = cw; destH = ch;
+        _regionRenderPass(gl, entry, 0, 0, 1, 1, intensity, destW, destH);
     } else {
-        _regionRenderPass(gl, entry, uvX, uvY, uvW, uvH, cw, ch, intensity);
+        destW = Math.max(2, Math.round(rw)); destH = Math.max(2, Math.round(rh));
+        _regionRenderPass(gl, entry, uvX, uvY, uvW, uvH, intensity, destW, destH);
     }
     _compositeRegion(
         drawingContext, _regionGLCanvas,
         x1, y1, rw, rh,
-        inverted, fusion, intensity
+        inverted, fusion, intensity,
+        destW, destH
     );
 }
 
-function _regionRenderPass(gl, entry, uvX, uvY, uvW, uvH, canvasW, canvasH, intensity) {
+function _regionRenderPass(gl, entry, uvX, uvY, uvW, uvH, intensity, destW, destH) {
     let { prog, locs } = entry;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); // render to screen (preserveDrawingBuffer)
-    gl.viewport(0, 0, _REGION_SIZE, _REGION_SIZE);
+    gl.viewport(0, 0, destW, destH);
     gl.useProgram(prog);
 
     // Bind source texture
@@ -573,8 +591,8 @@ function _regionRenderPass(gl, entry, uvX, uvY, uvW, uvH, canvasW, canvasH, inte
     // Uniforms (using cached locations)
     if (locs.u_blobRect !== null) gl.uniform4f(locs.u_blobRect, uvX, uvY, uvW, uvH);
     if (locs.u_intensity !== null) gl.uniform1f(locs.u_intensity, intensity);
-    if (locs.u_resolution !== null) gl.uniform2f(locs.u_resolution, _REGION_SIZE, _REGION_SIZE);
-    if (locs.u_texelSize !== null) gl.uniform2f(locs.u_texelSize, 1.0 / _REGION_SIZE, 1.0 / _REGION_SIZE);
+    if (locs.u_resolution !== null) gl.uniform2f(locs.u_resolution, destW, destH);
+    if (locs.u_texelSize !== null) gl.uniform2f(locs.u_texelSize, 1.0 / destW, 1.0 / destH);
     if (locs.u_time !== null) gl.uniform1f(locs.u_time, (typeof millis === 'function' ? millis() : performance.now()) / 1000.0);
 
     // Draw + flush (flush required before 2D canvas reads WebGL pixels via drawImage)
@@ -584,7 +602,7 @@ function _regionRenderPass(gl, entry, uvX, uvY, uvW, uvH, canvasW, canvasH, inte
     gl.bindVertexArray(null);
 }
 
-function _compositeRegion(ctx, glCanvas, px, py, pw, ph, inverted, fusion, intensity) {
+function _compositeRegion(ctx, glCanvas, px, py, pw, ph, inverted, fusion, intensity, destW, destH) {
     ctx.save();
 
     if (inverted) {
@@ -608,15 +626,17 @@ function _compositeRegion(ctx, glCanvas, px, py, pw, ph, inverted, fusion, inten
         ctx.globalAlpha = intensity;
     }
 
-    // Draw the GL canvas onto the p5 canvas
+    // Draw the GL canvas onto the p5 canvas. The GL viewport anchors at the
+    // buffer's bottom-left, so in drawImage (top-left) coords the rendered
+    // region starts at y = bufferHeight - destH.
+    let srcY = glCanvas.height - destH;
     if (inverted) {
         // Inverted: GL canvas holds a full-frame pass — cover the whole canvas.
         // (Previously this drew only into the blob rect, which the even-odd clip
         // excludes, so inverted mode rendered nothing — Codex audit region-fx:545.)
-        ctx.drawImage(glCanvas, 0, 0, _REGION_SIZE, _REGION_SIZE, 0, 0, ctx.canvas.width, ctx.canvas.height);
+        ctx.drawImage(glCanvas, 0, srcY, destW, destH, 0, 0, ctx.canvas.width, ctx.canvas.height);
     } else {
-        // Source: full GL canvas (0,0,SIZE,SIZE) → dest: blob rect
-        ctx.drawImage(glCanvas, 0, 0, _REGION_SIZE, _REGION_SIZE, px, py, pw, ph);
+        ctx.drawImage(glCanvas, 0, srcY, destW, destH, px, py, pw, ph);
     }
     ctx.restore();
 }
