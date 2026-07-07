@@ -6,6 +6,19 @@
 // ── PERFORMANCE (Tier 4) ─────────────────
 let _cachedCandidates = null; // reuse candidates when video is paused
 
+// Pause freeze: while the video is paused, blobs stay exactly as last derived —
+// no per-frame re-shuffle/re-match churn (which made blobs pulse while paused).
+// Changing any tracking param re-derives once, then re-freezes.
+let _pauseFreezeSig = null;
+let _pauseFreezePoints = null;
+
+function _pausedTrackingSig() {
+    let roi = (_roiEnabled && _roiRect) ? _roiRect.x1 + ',' + _roiRect.y1 + ',' + _roiRect.x2 + ',' + _roiRect.y2 : '';
+    return [currentMode, customHue, paramValues[0], paramValues[1], paramValues[4], paramValues[6],
+            _clusterEnabled, _clusterEps, _clusterMinPts, _dedupRadius, _persistenceEnabled,
+            _blobSmoothing, _maxMoveDistance, _minBlobAge, _persistDuration, _reviveEnabled, roi].join('|');
+}
+
 // 4A: Adaptive grid resolution — coarser scan when fewer blobs needed
 function adaptiveGridSize(w) {
     let baseGrid = w > 1280 ? 36 : 22;
@@ -358,9 +371,26 @@ function matchAndUpdateBlobs(candidates, numPoints, blobVarLevel) {
 }
 
 function trackPoints() {
+    if (!videoPlaying && videoLoaded && currentMode !== 0) {
+        let sig = _pausedTrackingSig();
+        if (sig === _pauseFreezeSig && _pauseFreezePoints) {
+            trackedPoints = _pauseFreezePoints; // frozen — skip all re-derivation
+            return;
+        }
+        _derivePoints();
+        _pauseFreezeSig = sig;
+        _pauseFreezePoints = trackedPoints;
+        return;
+    }
+    _pauseFreezeSig = null;
+    _pauseFreezePoints = null;
+    _derivePoints();
+}
+
+function _derivePoints() {
     trackedPoints = [];
-    // Note: paused video intentionally continues here — the usePauseCache branch
-    // below reuses cached candidates so blobs persist while paused (Codex audit).
+    // Paused video still derives here (once per param change via the freeze wrapper
+    // above) — the usePauseCache branch below reuses cached candidates to skip loadPixels.
     if (currentMode === 0 || !videoLoaded) return;
 
     // FACE LANDMARK modes (EYES=15, LIPS=16, FACE=17) — uses MediaPipe landmarks but needs pixel data for color sampling
