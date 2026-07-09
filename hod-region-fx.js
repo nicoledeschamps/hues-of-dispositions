@@ -8,8 +8,11 @@
 let regionFXEnabled = false;
 let regionFXMode = 'none';    // none, inv, pixel, thermal, blur, glitch, tone, dither, crt, edge, zoom, water, fill
 let regionFXInvert = false;   // apply OUTSIDE blob
+let regionFXFeather = 0;      // edge soften in px (0 = hard rect edges)
 let _rfxInvertRects = [];     // blob rects accumulated this frame for inverted mode
 let _rfxInvertFrame = -1;     // frameCount the rect accumulator belongs to
+let _rfxScratchA = null;      // reusable 2D scratch for feathered compositing
+let _rfxScratchB = null;      // reusable 2D scratch for feathered knockout rects
 let regionFXFusion = false;   // 50/50 blend
 let regionFXRandom = false;   // random per blob
 let regionFXIntensity = 100;  // 0–100
@@ -444,9 +447,26 @@ function applyRegionFX(blob, canvasEl) {
     // Determine which mode to apply for this blob
     let mode = regionFXMode;
     if (regionFXRandom) {
-        // Deterministic per blob using blob position hash
-        let hash = Math.abs(Math.round(blob.posicao.x * 7 + blob.posicao.y * 13)) % _REGION_MODES.length;
-        mode = _REGION_MODES[hash];
+        // Stable per blob: PersistentBlob id keeps one mode for the blob's whole
+        // lifetime. Position hash (fallback for non-persistent points) made the
+        // mode flip constantly as a blob drifted across hash boundaries.
+        let key = (blob.id !== undefined) ? blob.id
+                : Math.round(blob.posicao.x * 7 + blob.posicao.y * 13);
+        mode = _REGION_MODES[Math.abs(key) % _REGION_MODES.length];
+    }
+
+    // Fade regions in/out with blob lifetime (persistent blobs only) so they
+    // don't pop hard on spawn/expire.
+    let lifeAlpha = 1;
+    if (blob.age !== undefined) {
+        const RFX_FADE_IN = 8; // frames
+        lifeAlpha = Math.min(1, blob.age / RFX_FADE_IN);
+        if (blob.state === 'lost') {
+            let maxLost = (typeof _reviveEnabled !== 'undefined' && _reviveEnabled)
+                ? Math.max(_persistDuration, _reviveTime) : _persistDuration;
+            lifeAlpha *= Math.max(0, 1 - blob.lostFrames / Math.max(1, maxLost));
+        }
+        if (lifeAlpha <= 0.02) return;
     }
 
     // Compute blob rect (preserving original clamping semantics)
@@ -472,7 +492,7 @@ function applyRegionFX(blob, canvasEl) {
         _rfxInvertRects.push({ x: x1, y: y1, w: rw, h: rh });
         return;
     }
-    _applyRegionFXCore(x1, y1, rw, rh, mode, intensity, canvasEl, false, regionFXFusion);
+    _applyRegionFXCore(x1, y1, rw, rh, mode, intensity, canvasEl, false, regionFXFusion, lifeAlpha);
 }
 
 // Inverted region FX: one full-frame effect pass, clipped to exclude every blob rect
@@ -500,14 +520,43 @@ function flushRegionFXInverted(canvasEl) {
     _regionRenderPass(gl, entry, 0, 0, 1, 1, intensity, canvasEl.width, canvasEl.height);
 
     let ctx = drawingContext;
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    for (let r of _rfxInvertRects) ctx.rect(r.x, r.y, r.w, r.h); // even-odd excludes blob rects
-    ctx.clip('evenodd');
-    ctx.globalAlpha = regionFXFusion ? 0.5 : intensity;
-    ctx.drawImage(_regionGLCanvas, 0, _regionGLCanvas.height - canvasEl.height, canvasEl.width, canvasEl.height, 0, 0, ctx.canvas.width, ctx.canvas.height);
-    ctx.restore();
+    let alpha = regionFXFusion ? 0.5 : intensity;
+    let cw = canvasEl.width, ch = canvasEl.height;
+
+    if (regionFXFeather > 0) {
+        // Feathered holes: draw the full-frame pass into a scratch, then knock
+        // out each blob rect with a soft-edged white rect (destination-out).
+        let s = _rfxScratch('A', cw, ch);
+        let sctx = s.getContext('2d');
+        sctx.globalCompositeOperation = 'source-over';
+        sctx.clearRect(0, 0, cw, ch);
+        sctx.drawImage(_regionGLCanvas, 0, _regionGLCanvas.height - ch, cw, ch, 0, 0, cw, ch);
+        for (let r of _rfxInvertRects) {
+            let b = _rfxScratch('B', r.w, r.h);
+            let bctx = b.getContext('2d');
+            bctx.globalCompositeOperation = 'source-over';
+            bctx.clearRect(0, 0, r.w, r.h);
+            bctx.fillStyle = '#fff';
+            bctx.fillRect(0, 0, r.w, r.h);
+            _applyEdgeFeather(bctx, r.w, r.h, regionFXFeather);
+            sctx.globalCompositeOperation = 'destination-out';
+            sctx.drawImage(b, 0, 0, r.w, r.h, r.x, r.y, r.w, r.h);
+        }
+        sctx.globalCompositeOperation = 'source-over';
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(s, 0, 0, cw, ch, 0, 0, ctx.canvas.width, ctx.canvas.height);
+        ctx.restore();
+    } else {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        for (let r of _rfxInvertRects) ctx.rect(r.x, r.y, r.w, r.h); // even-odd excludes blob rects
+        ctx.clip('evenodd');
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(_regionGLCanvas, 0, _regionGLCanvas.height - ch, cw, ch, 0, 0, ctx.canvas.width, ctx.canvas.height);
+        ctx.restore();
+    }
     _rfxInvertRects.length = 0;
 }
 
@@ -532,7 +581,7 @@ function applyRegionFXToRect(x, y, w, h, mode, intensity, canvasEl, inverted, fu
 }
 
 // Shared core — takes already-clamped rect. Handles texture upload, render pass, composite.
-function _applyRegionFXCore(x1, y1, rw, rh, mode, intensity, canvasEl, inverted, fusion) {
+function _applyRegionFXCore(x1, y1, rw, rh, mode, intensity, canvasEl, inverted, fusion, lifeAlpha = 1) {
     let gl = _regionGL;
     let entry = _regionPrograms[mode];
     if (!entry) return;
@@ -573,7 +622,7 @@ function _applyRegionFXCore(x1, y1, rw, rh, mode, intensity, canvasEl, inverted,
         drawingContext, _regionGLCanvas,
         x1, y1, rw, rh,
         inverted, fusion, intensity,
-        destW, destH
+        destW, destH, lifeAlpha
     );
 }
 
@@ -602,7 +651,64 @@ function _regionRenderPass(gl, entry, uvX, uvY, uvW, uvH, intensity, destW, dest
     gl.bindVertexArray(null);
 }
 
-function _compositeRegion(ctx, glCanvas, px, py, pw, ph, inverted, fusion, intensity, destW, destH) {
+// Reusable scratch canvases for feathered compositing (grow-only)
+function _rfxScratch(which, w, h) {
+    let s;
+    if (which === 'A') {
+        if (!_rfxScratchA) _rfxScratchA = document.createElement('canvas');
+        s = _rfxScratchA;
+    } else {
+        if (!_rfxScratchB) _rfxScratchB = document.createElement('canvas');
+        s = _rfxScratchB;
+    }
+    if (s.width < w) s.width = Math.ceil(w);
+    if (s.height < h) s.height = Math.ceil(h);
+    return s;
+}
+
+// Multiply the scratch's alpha by a horizontal and a vertical edge ramp —
+// a box feather without expensive blur filters.
+function _applyEdgeFeather(sctx, w, h, f) {
+    let fx = Math.min(f, w / 2), fy = Math.min(f, h / 2);
+    sctx.globalCompositeOperation = 'destination-in';
+    let gh = sctx.createLinearGradient(0, 0, w, 0);
+    gh.addColorStop(0, 'rgba(0,0,0,0)');
+    gh.addColorStop(fx / w, 'rgba(0,0,0,1)');
+    gh.addColorStop(1 - fx / w, 'rgba(0,0,0,1)');
+    gh.addColorStop(1, 'rgba(0,0,0,0)');
+    sctx.fillStyle = gh;
+    sctx.fillRect(0, 0, w, h);
+    let gv = sctx.createLinearGradient(0, 0, 0, h);
+    gv.addColorStop(0, 'rgba(0,0,0,0)');
+    gv.addColorStop(fy / h, 'rgba(0,0,0,1)');
+    gv.addColorStop(1 - fy / h, 'rgba(0,0,0,1)');
+    gv.addColorStop(1, 'rgba(0,0,0,0)');
+    sctx.fillStyle = gv;
+    sctx.fillRect(0, 0, w, h);
+    sctx.globalCompositeOperation = 'source-over';
+}
+
+function _compositeRegion(ctx, glCanvas, px, py, pw, ph, inverted, fusion, intensity, destW, destH, lifeAlpha = 1) {
+    let alpha = (fusion ? 0.5 : intensity) * lifeAlpha;
+    let srcY = glCanvas.height - destH;
+
+    // Feathered normal mode: alpha ramp replaces the hard clip.
+    // (Inverted hand-frame rects keep hard edges; the main inverted path
+    // feathers in flushRegionFXInverted.)
+    if (!inverted && regionFXFeather > 0) {
+        let s = _rfxScratch('A', pw, ph);
+        let sctx = s.getContext('2d');
+        sctx.globalCompositeOperation = 'source-over';
+        sctx.clearRect(0, 0, pw, ph);
+        sctx.drawImage(glCanvas, 0, srcY, destW, destH, 0, 0, pw, ph);
+        _applyEdgeFeather(sctx, pw, ph, regionFXFeather);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(s, 0, 0, pw, ph, px, py, pw, ph);
+        ctx.restore();
+        return;
+    }
+
     ctx.save();
 
     if (inverted) {
@@ -620,16 +726,11 @@ function _compositeRegion(ctx, glCanvas, px, py, pw, ph, inverted, fusion, inten
         ctx.clip();
     }
 
-    if (fusion) {
-        ctx.globalAlpha = 0.5;
-    } else {
-        ctx.globalAlpha = intensity;
-    }
+    ctx.globalAlpha = alpha;
 
     // Draw the GL canvas onto the p5 canvas. The GL viewport anchors at the
     // buffer's bottom-left, so in drawImage (top-left) coords the rendered
     // region starts at y = bufferHeight - destH.
-    let srcY = glCanvas.height - destH;
     if (inverted) {
         // Inverted: GL canvas holds a full-frame pass — cover the whole canvas.
         // (Previously this drew only into the blob rect, which the even-odd clip
@@ -673,6 +774,16 @@ function wireRegionFXUI() {
         slider.addEventListener('input', () => {
             regionFXIntensity = parseInt(slider.value);
             if (valDisplay) valDisplay.textContent = slider.value;
+        });
+    }
+
+    // Edge soften slider
+    let featherSlider = document.getElementById('slider-rfx-feather');
+    let featherVal = document.getElementById('val-rfx-feather');
+    if (featherSlider) {
+        featherSlider.addEventListener('input', () => {
+            regionFXFeather = parseInt(featherSlider.value);
+            if (featherVal) featherVal.textContent = featherSlider.value;
         });
     }
 
